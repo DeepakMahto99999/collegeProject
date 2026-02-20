@@ -2,30 +2,35 @@ import mongoose from "mongoose";
 
 const aiCacheSchema = new mongoose.Schema({
 
-    videoId: {
-        type: String,
-        required: true,
-        unique: true
-    },
+  videoId: {
+    type: String,
+    required: true
+  },
 
-    topic: String,
+  topic: {
+    type: String,
+    required: true
+  },
 
-    relevant: {
-        type: Boolean,
-        default: false
-    },
+  relevant: {
+    type: Boolean,
+    default: false
+  },
 
-    confidence: {
-        type: Number,
-        default: 0
-    },
+  confidence: {
+    type: Number,
+    default: 0
+  },
 
-    checkedAt: {
-        type: Date,
-        default: Date.now
-    }
+  reason: String,
+
+  checkedAt: {
+    type: Date,
+    default: Date.now
+  }
 
 });
 
+aiCacheSchema.index({ videoId: 1, topic: 1 }, { unique: true });
 
-export default mongoose.model("AiCache", aiCacheSchema)
+export default mongoose.model("AiCache", aiCacheSchema);

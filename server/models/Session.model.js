@@ -1,10 +1,13 @@
+import mongoose from "mongoose";
+
 const sessionSchema = new mongoose.Schema({
+
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
     required: true,
   },
-  
+
   topic: {
     type: String,
     required: true,
@@ -21,18 +24,30 @@ const sessionSchema = new mongoose.Schema({
     default: "ARMED",
   },
 
-  // TIMER TRUST MODEL
-  timerStartTime: Date,
-  timerExpectedEndTime: Date,
+  // TIMER AUTHORITY
+  startTime: Date,
   lastHeartbeatAt: Date,
+
+  totalFocusSeconds: {
+    type: Number,
+    default: 0
+  },
 
   // VIDEO CONTEXT
   activeVideoId: String,
 
-  // SERVER CALCULATED TIME (SECONDS)
-  totalFocusSeconds: {
-    type: Number,
-    default: 0
+  // SESSION-LEVEL AI CACHE
+  validatedVideos: {
+    type: Map,
+    of: new mongoose.Schema({
+      decision: {
+        type: String,
+        enum: ["VALID", "INVALID", "VALID_LOW_CONFIDENCE"]
+      },
+      confidence: Number,
+      reason: String
+    }, { _id: false }),
+    default: {}
   },
 
   // TAB ABUSE TRACKING
@@ -45,7 +60,10 @@ const sessionSchema = new mongoose.Schema({
   pauseEventCount: { type: Number, default: 0 },
   lastPauseStart: Date,
 
-  // AI VALIDITY
+  // RECOVERY WINDOW
+  recoveryWindowEndsAt: Date,
+
+  // AI ANALYTICS
   aiConfidenceAverage: Number,
 
   completed: {
@@ -53,13 +71,13 @@ const sessionSchema = new mongoose.Schema({
     default: false,
   },
 
-
   invalidReason: {
     type: String,
     enum: [
       "TOPIC_MISMATCH",
-      "TAB_ABUSE",
-      " SHORTS",
+      "EXCESSIVE_TAB_AWAY",
+      "PAUSE_ABUSE",
+      "SHORTS_NOT_ALLOWED",
       "MANUAL_CANCEL",
       "AI_LOW_CONFIDENCE",
       "NETWORK_ABORT",
@@ -67,3 +85,5 @@ const sessionSchema = new mongoose.Schema({
   },
 
 }, { timestamps: true });
+
+export default mongoose.model("Session", sessionSchema);
