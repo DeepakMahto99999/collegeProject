@@ -48,6 +48,18 @@ export const startSession = async (req, res) => {
       return res.status(400).json({ success: false, message: "Valid topic required" });
     }
 
+    const existing = await Session.findOne({
+      userId,
+      status: { $in: ["ARMED", "RUNNING"] }
+    });
+
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: "Session already active"
+      });
+    }
+
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ success: false });
 
@@ -107,7 +119,6 @@ export const videoEvent = async (req, res) => {
 
     if (globalCache) {
       decision = applyConfidenceRule({
-        relevant: globalCache.relevant,
         confidence: globalCache.confidence,
         reason: globalCache.reason
       });
@@ -120,13 +131,16 @@ export const videoEvent = async (req, res) => {
 
       decision = applyConfidenceRule(aiResult);
 
-      await AiCache.create({
-        videoId,
-        topic: session.topic,
-        relevant: aiResult.relevant,
-        confidence: aiResult.confidence,
-        reason: aiResult.reason
-      });
+      await AiCache.findOneAndUpdate(
+        { videoId, topic: session.topic },
+        {
+          videoId,
+          topic: session.topic,
+          confidence: aiResult.confidence,
+          reason: aiResult.reason
+        },
+        { upsert: true, new: true }
+      );
     }
 
     // Save inside session-level cache
@@ -155,11 +169,6 @@ export const heartbeatFocus = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { sessionId } = req.params;
-    const { seconds } = req.body;
-
-    if (!seconds || seconds <= 0) {
-      return res.json({ success: false });
-    }
 
     const session = await Session.findOne({
       _id: sessionId,
@@ -167,16 +176,39 @@ export const heartbeatFocus = async (req, res) => {
       status: "RUNNING"
     });
 
-    if (!session) return res.json({ success: false });
+    if (!session) {
+      return res.status(400).json({ success: false });
+    }
 
-    session.totalFocusSeconds += seconds;
-    session.lastHeartbeatAt = new Date();
+    const now = Date.now();
+
+    // If first heartbeat after RUNNING
+    if (!session.lastHeartbeatAt) {
+      session.lastHeartbeatAt = new Date(now);
+      await session.save();
+      return res.json({ success: true });
+    }
+
+    const last = new Date(session.lastHeartbeatAt).getTime();
+    const diffSeconds = Math.floor((now - last) / 1000);
+
+    // Reject if too fast (spam)
+    if (diffSeconds <= 0) {
+      return res.json({ success: false });
+    }
+
+    // Cap max heartbeat gain (anti-cheat)
+    const safeSeconds = Math.min(diffSeconds, 30);
+
+    session.totalFocusSeconds += safeSeconds;
+    session.lastHeartbeatAt = new Date(now);
 
     await session.save();
 
     return res.json({ success: true });
 
-  } catch {
+  } catch (err) {
+    console.error("Heartbeat error:", err);
     return res.status(500).json({ success: false });
   }
 };
@@ -264,11 +296,10 @@ export const resetSession = async (req, res) => {
 // Confidence Rule Helper
 // ============================================================
 function applyConfidenceRule(aiResult) {
-  // 1️⃣ Strict structure validation
+  // 1️⃣ Validate AI response structure
   if (
     !aiResult ||
-    typeof aiResult.confidence !== "number" ||
-    typeof aiResult.relevant !== "boolean"
+    typeof aiResult.confidence !== "number"
   ) {
     return {
       decision: "INVALID",
@@ -277,20 +308,16 @@ function applyConfidenceRule(aiResult) {
     };
   }
 
-  // 2️⃣ Normalize confidence to safe range (0–1)
-  const confidence = Math.max(0, Math.min(1, aiResult.confidence));
+  // 2️⃣ Normalize confidence safely between 0–1
+  const confidence = Math.max(
+    0,
+    Math.min(1, Number(aiResult.confidence))
+  );
 
-  // 3️⃣ If AI says not relevant → always INVALID
-  if (aiResult.relevant === false) {
-    return {
-      decision: "INVALID",
-      confidence,
-      reason: aiResult.reason || "AI marked video as irrelevant"
-    };
-  }
+  const THRESHOLD = 0.55; // You can tune this later
 
-  // 4️⃣ If relevant and confidence strong enough → VALID
-  if (confidence >= 0.55) {
+  // 3️⃣ Backend policy decision
+  if (confidence >= THRESHOLD) {
     return {
       decision: "VALID",
       confidence,
@@ -298,7 +325,6 @@ function applyConfidenceRule(aiResult) {
     };
   }
 
-  // 5️⃣ Relevant but confidence too weak → INVALID
   return {
     decision: "INVALID",
     confidence,

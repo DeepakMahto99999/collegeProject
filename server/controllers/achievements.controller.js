@@ -98,3 +98,84 @@ export const getAchievementPreview = async (req, res) => {
     res.status(500).json({ success: false });
   }
 };
+
+
+export const checkAndUnlockAchievements = async (userId, session) => {
+
+  try {
+
+    const user = await User.findById(userId);
+    if (!user) return;
+
+    const achievements = await Achievement.find({ isActive: true });
+    const unlocked = await UserAchievement.find({ userId });
+
+    const unlockedSet = new Set(
+      unlocked.map(a => a.achievementId.toString())
+    );
+
+    // Calculate monthly minutes INCLUDING this session
+    let monthlyMinutes = null;
+
+    const sessionMonth = new Date(session.createdAt).getMonth();
+    const sessionYear = new Date(session.createdAt).getFullYear();
+
+    for (const ach of achievements) {
+
+      if (unlockedSet.has(ach._id.toString())) continue;
+
+      let qualifies = false;
+
+      switch (ach.conditionType) {
+
+        case "TOTAL_SESSIONS":
+          qualifies = user.totalSessions >= ach.threshold;
+          break;
+
+        case "TOTAL_MINUTES":
+          qualifies = user.totalFocusMinutes >= ach.threshold;
+          break;
+
+        case "STREAK":
+          qualifies = user.longestStreak >= ach.threshold;
+          break;
+
+        case "MONTHLY_MINUTES":
+
+          if (monthlyMinutes === null) {
+
+            const startOfMonth = new Date(sessionYear, sessionMonth, 1);
+
+            const monthlySessions = await Session.find({
+              userId,
+              completed: true,
+              createdAt: { $gte: startOfMonth }
+            });
+
+            monthlyMinutes = monthlySessions.reduce(
+              (acc, s) => acc + s.focusLength,
+              0
+            );
+          }
+
+          qualifies = monthlyMinutes >= ach.threshold;
+          break;
+
+        default:
+          qualifies = false;
+      }
+
+      if (qualifies) {
+        await UserAchievement.create({
+          userId,
+          achievementId: ach._id,
+          unlockedAt: new Date()
+        });
+      }
+
+    }
+
+  } catch (err) {
+    console.error("Unlock achievement error:", err);
+  }
+};

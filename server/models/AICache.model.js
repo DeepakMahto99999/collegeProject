@@ -12,10 +12,6 @@ const aiCacheSchema = new mongoose.Schema({
     required: true
   },
 
-  relevant: {
-    type: Boolean,
-    default: false
-  },
 
   confidence: {
     type: Number,
