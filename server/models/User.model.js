@@ -67,10 +67,6 @@ const userSchema = new mongoose.Schema(
     lastSessionDate: {
       type: Date,
     },
-    antiCheatScore: {
-      type: Number,
-      default: 100
-    },
     lastActiveAt: {
       type: Date
     }
