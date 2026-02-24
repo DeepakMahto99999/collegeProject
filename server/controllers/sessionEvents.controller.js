@@ -63,6 +63,11 @@ export const handleSessionEvent = async (req, res) => {
 
         switch (type) {
 
+            case "SHORTS_DETECTED":
+                session.status = "INVALID";
+                session.invalidReason = "SHORTS_NOT_ALLOWED";
+                break;
+
             case "TAB_HIDDEN_START":
                 session.lastHiddenStart = now;
                 break;
@@ -119,20 +124,20 @@ function handleTabHiddenEnd(session, now) {
 
 
 function handlePauseEnd(session, now) {
-  if (!session.lastPauseStart) return;
+    if (!session.lastPauseStart) return;
 
-  const pauseSeconds = Math.floor(
-    (now.getTime() - session.lastPauseStart.getTime()) / 1000
-  );
+    const pauseSeconds = Math.floor(
+        (now.getTime() - session.lastPauseStart.getTime()) / 1000
+    );
 
-  session.totalPauseSeconds += pauseSeconds;
-  session.pauseEventCount += 1;
-  session.lastPauseStart = null;
+    session.totalPauseSeconds += pauseSeconds;
+    session.pauseEventCount += 1;
+    session.lastPauseStart = null;
 
-  const maxAllowed = session.focusLength * 60 * 0.2;
+    const maxAllowed = session.focusLength * 60 * 0.2;
 
-  if (session.totalPauseSeconds > maxAllowed) {
-    session.status = "INVALID";
-    session.invalidReason = "PAUSE_ABUSE";
-  }
+    if (session.totalPauseSeconds > maxAllowed) {
+        session.status = "INVALID";
+        session.invalidReason = "PAUSE_ABUSE";
+    }
 }
