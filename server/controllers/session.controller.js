@@ -322,7 +322,7 @@ export const heartbeatFocus = async (req, res) => {
       return res.status(400).json({ success: false });
     }
 
-    // 🔥 1️⃣ Enforce recovery expiry FIRST
+    // 1 Enforce recovery expiry FIRST
     enforceRecoveryIfExpired(session);
 
     if (session.status === "INVALID") {
@@ -332,7 +332,9 @@ export const heartbeatFocus = async (req, res) => {
 
     const now = Date.now();
 
-    // 🔥 2️⃣ Accumulate hidden time if still hidden (ANTI-EXPLOIT)
+    // ============================================================
+    // 2 Accumulate hidden time if still hidden (ANTI-EXPLOIT)
+    // ============================================================
     if (session.lastHiddenStart) {
 
       const hiddenSeconds = Math.floor(
@@ -353,7 +355,32 @@ export const heartbeatFocus = async (req, res) => {
       }
     }
 
-    // 🔥 3️⃣ If first heartbeat
+    // ============================================================
+    // 3  Accumulate pause time if still paused (ANTI-EXPLOIT)
+    // ============================================================
+    if (session.lastPauseStart) {
+
+      const pauseSeconds = Math.floor(
+        (now - session.lastPauseStart.getTime()) / 1000
+      );
+
+      session.totalPauseSeconds += pauseSeconds;
+      session.lastPauseStart = new Date(now);
+
+      const maxAllowed = session.focusLength * 60 * 0.2;
+
+      if (session.totalPauseSeconds > maxAllowed) {
+        session.status = "INVALID";
+        session.invalidReason = "PAUSE_ABUSE";
+
+        await session.save();
+        return res.status(400).json({ success: false });
+      }
+    }
+
+    // ============================================================
+    // 4 First heartbeat handling
+    // ============================================================
     if (!session.lastHeartbeatAt) {
       session.lastHeartbeatAt = new Date(now);
       await session.save();
@@ -363,12 +390,12 @@ export const heartbeatFocus = async (req, res) => {
     const last = session.lastHeartbeatAt.getTime();
     const diffSeconds = Math.floor((now - last) / 1000);
 
-    // Reject spam
+    // Reject spam / duplicate calls
     if (diffSeconds <= 0) {
       return res.json({ success: false });
     }
 
-    // Cap heartbeat gain
+    // Cap heartbeat gain (anti-cheat)
     const safeSeconds = Math.min(diffSeconds, 30);
 
     session.totalFocusSeconds += safeSeconds;
@@ -383,6 +410,7 @@ export const heartbeatFocus = async (req, res) => {
     return res.status(500).json({ success: false });
   }
 };
+
 
 // ============================================================
 // 5️⃣ COMPLETE SESSION
