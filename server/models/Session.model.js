@@ -63,6 +63,16 @@ const sessionSchema = new mongoose.Schema({
   // RECOVERY WINDOW
   recoveryWindowEndsAt: Date,
 
+  recoveryActive: {
+    type: Boolean,
+    default: false
+  },
+
+  recoveryCount: {
+    type: Number,
+    default: 0
+  },
+
   // AI ANALYTICS
   aiConfidenceAverage: Number,
 

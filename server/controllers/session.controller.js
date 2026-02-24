@@ -4,6 +4,63 @@ import AiCache from "../models/AICache.model.js";
 import { checkAndUnlockAchievements } from "./achievements.controller.js";
 import { aiJudgeService } from "../services/aiJudge.service.js"; // you must implement
 
+
+// ============================================================
+// Confidence Rule Helper
+// ============================================================
+function applyConfidenceRule(aiResult) {
+  // 1️⃣ Validate AI response structure
+  if (
+    !aiResult ||
+    typeof aiResult.confidence !== "number"
+  ) {
+    return {
+      decision: "INVALID",
+      confidence: 0,
+      reason: "Invalid AI response format"
+    };
+  }
+
+  // 2️⃣ Normalize confidence safely between 0–1
+  const confidence = Math.max(
+    0,
+    Math.min(1, Number(aiResult.confidence))
+  );
+
+  const THRESHOLD = 0.55; // You can tune this later
+
+  // 3️⃣ Backend policy decision
+  if (confidence >= THRESHOLD) {
+    return {
+      decision: "VALID",
+      confidence,
+      reason: aiResult.reason || "Relevant video"
+    };
+  }
+
+  return {
+    decision: "INVALID",
+    confidence,
+    reason: aiResult.reason || "Confidence too low"
+  };
+}
+
+// ============================================================
+// Expiry Enforcer Helper
+// ============================================================
+function enforceRecoveryIfExpired(session) {
+  if (
+    session.recoveryActive &&
+    session.recoveryWindowEndsAt &&
+    Date.now() > session.recoveryWindowEndsAt.getTime()
+  ) {
+    session.status = "INVALID";
+    session.invalidReason = "TOPIC_MISMATCH";
+    session.recoveryActive = false;
+    session.recoveryWindowEndsAt = null;
+  }
+}
+
 // ============================================================
 // 1️⃣ GET CURRENT SESSION (Popup Sync Authority)
 // ============================================================
@@ -15,6 +72,11 @@ export const getCurrentSession = async (req, res) => {
       userId,
       status: { $in: ["ARMED", "RUNNING"] }
     }).sort({ createdAt: -1 });
+
+    if (session) {
+      enforceRecoveryIfExpired(session);
+      await session.save();
+    }
 
     const user = await User.findById(userId).lean();
 
@@ -89,6 +151,7 @@ export const startSession = async (req, res) => {
   }
 };
 
+
 // ============================================================
 // 3️⃣ VIDEO EVENT (AI PIPELINE — THE BRAIN)
 // ============================================================
@@ -99,65 +162,135 @@ export const videoEvent = async (req, res) => {
 
     const session = await Session.findOne({ _id: sessionId, userId });
 
-    if (!session || session.status === "INVALID" || session.status === "COMPLETED") {
+    if (!session) {
       return res.status(400).json({ success: false });
     }
 
-    // 🔁 1. Session-level cache
-    const sessionCached = session.validatedVideos?.get(videoId);
-    if (sessionCached) {
-      return res.json(sessionCached);
+    // 🔥 1️⃣ Enforce expiry FIRST
+    enforceRecoveryIfExpired(session);
+
+    if (session.status === "INVALID") {
+      await session.save();
+
+      return res.json({
+        status: session.status,
+        invalidReason: session.invalidReason,
+        recoveryActive: false,
+        recoveryWindowEndsAt: null,
+        recoveryCount: session.recoveryCount
+      });
     }
 
-    // 🔁 2. Global AI Cache
-    const globalCache = await AiCache.findOne({
-      videoId,
-      topic: session.topic
-    });
+    if (session.status === "COMPLETED") {
+      return res.status(400).json({ success: false });
+    }
+
+    // ============================================================
+    // 2️⃣ AI Decision (Session Cache → Global Cache → AI)
+    // ============================================================
 
     let decision;
 
-    if (globalCache) {
-      decision = applyConfidenceRule({
-        confidence: globalCache.confidence,
-        reason: globalCache.reason
-      });
+    // 🔁 Session-level cache (DO NOT early return anymore)
+    const sessionCached = session.validatedVideos?.get(videoId);
+
+    if (sessionCached) {
+      decision = sessionCached;
     } else {
-      const aiResult = await aiJudgeService({
-        topic: session.topic,
-        title,
-        description
+      // 🔁 Global AI Cache
+      const globalCache = await AiCache.findOne({
+        videoId,
+        topic: session.topic
       });
 
-      decision = applyConfidenceRule(aiResult);
-
-      await AiCache.findOneAndUpdate(
-        { videoId, topic: session.topic },
-        {
-          videoId,
+      if (globalCache) {
+        decision = applyConfidenceRule({
+          confidence: globalCache.confidence,
+          reason: globalCache.reason
+        });
+      } else {
+        const aiResult = await aiJudgeService({
           topic: session.topic,
-          confidence: aiResult.confidence,
-          reason: aiResult.reason
-        },
-        { upsert: true, new: true }
-      );
+          title,
+          description
+        });
+
+        decision = applyConfidenceRule(aiResult);
+
+        await AiCache.findOneAndUpdate(
+          { videoId, topic: session.topic },
+          {
+            videoId,
+            topic: session.topic,
+            confidence: aiResult.confidence,
+            reason: aiResult.reason
+          },
+          { upsert: true, new: true }
+        );
+      }
+
+      // Save in session-level cache
+      session.validatedVideos.set(videoId, decision);
     }
 
-    // Save inside session-level cache
-    session.validatedVideos.set(videoId, decision);
     session.activeVideoId = videoId;
 
-    // 🔄 State transition
+    // ============================================================
+    // 3️⃣ ARMED → RUNNING
+    // ============================================================
+
     if (decision.decision === "VALID" && session.status === "ARMED") {
       session.status = "RUNNING";
       session.startTime = new Date();
     }
 
+    // ============================================================
+    // 4️⃣ Recovery Logic (RUNNING only)
+    // ============================================================
+
+    if (session.status === "RUNNING") {
+
+      if (decision.decision === "INVALID") {
+
+        if (!session.recoveryActive) {
+
+          if (session.recoveryCount >= 5) {
+            session.status = "INVALID";
+            session.invalidReason = "TOPIC_MISMATCH";
+          } else {
+            session.recoveryActive = true;
+            session.recoveryWindowEndsAt = new Date(Date.now() + 60 * 1000);
+            session.recoveryCount += 1;
+          }
+
+        }
+
+      } else if (
+        decision.decision === "VALID" &&
+        session.recoveryActive
+      ) {
+        // Clear recovery if user corrected within window
+        session.recoveryActive = false;
+        session.recoveryWindowEndsAt = null;
+      }
+    }
+
+    // ============================================================
+    // 5️⃣ Save and Return Authoritative State
+    // ============================================================
+
     await session.save();
 
-    return res.json(decision);
+    return res.json({
+      ...decision,
+      status: session.status,
+      recoveryActive: session.recoveryActive,
+      recoveryWindowEndsAt: session.recoveryWindowEndsAt,
+      recoveryCount: session.recoveryCount
+    });
 
   } catch (err) {
+    console.error("VideoEvent error:", err);
     return res.status(500).json({ success: false });
   }
 };
@@ -177,6 +310,13 @@ export const heartbeatFocus = async (req, res) => {
     });
 
     if (!session) {
+      return res.status(400).json({ success: false });
+    }
+
+    enforceRecoveryIfExpired(session);
+
+    if (session.status === "INVALID") {
+      await session.save();
       return res.status(400).json({ success: false });
     }
 
@@ -283,6 +423,11 @@ export const resetSession = async (req, res) => {
     session.completed = false;
     session.activeVideoId = null;
 
+    // 🔥 Clear recovery state
+    session.recoveryActive = false;
+    session.recoveryWindowEndsAt = null;
+    session.recoveryCount = 0;
+
     await session.save();
 
     return res.json({ success: true });
@@ -292,42 +437,3 @@ export const resetSession = async (req, res) => {
   }
 };
 
-// ============================================================
-// Confidence Rule Helper
-// ============================================================
-function applyConfidenceRule(aiResult) {
-  // 1️⃣ Validate AI response structure
-  if (
-    !aiResult ||
-    typeof aiResult.confidence !== "number"
-  ) {
-    return {
-      decision: "INVALID",
-      confidence: 0,
-      reason: "Invalid AI response format"
-    };
-  }
-
-  // 2️⃣ Normalize confidence safely between 0–1
-  const confidence = Math.max(
-    0,
-    Math.min(1, Number(aiResult.confidence))
-  );
-
-  const THRESHOLD = 0.55; // You can tune this later
-
-  // 3️⃣ Backend policy decision
-  if (confidence >= THRESHOLD) {
-    return {
-      decision: "VALID",
-      confidence,
-      reason: aiResult.reason || "Relevant video"
-    };
-  }
-
-  return {
-    decision: "INVALID",
-    confidence,
-    reason: aiResult.reason || "Confidence too low"
-  };
-}
