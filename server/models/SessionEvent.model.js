@@ -50,6 +50,15 @@ const sessionEventSchema = new mongoose.Schema({
     default: Date.now
   }
 
-}, { timestamps: true });
+}, { timestamps: true }); 
+
+sessionEventSchema.index({ sessionId: 1 });
+sessionEventSchema.index({ userId: 1 });
+sessionEventSchema.index({ serverTimestamp: -1 });
+
+sessionEventSchema.index(
+  { serverTimestamp: 1 },
+  { expireAfterSeconds: 60 * 60 * 24 * 30 } // 30 days
+);
 
 export default mongoose.model("SessionEvent", sessionEventSchema);

@@ -96,4 +96,12 @@ const sessionSchema = new mongoose.Schema({
   optimisticConcurrency: true
 });
 
+//  Frequently used queries
+sessionSchema.index({ userId: 1, status: 1 });
+sessionSchema.index({ userId: 1, createdAt: -1 });
+
+//  Dashboard / stats queries
+sessionSchema.index({ userId: 1, completed: 1, startTime: -1 });
+
+
 export default mongoose.model("Session", sessionSchema);

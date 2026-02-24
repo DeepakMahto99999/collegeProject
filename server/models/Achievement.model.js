@@ -52,4 +52,6 @@ const achievementSchema = new mongoose.Schema({
   
 });
 
+achievementSchema.index({ isActive: 1 });
+
 export default mongoose.model("Achievement", achievementSchema);

@@ -75,4 +75,7 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+userSchema.index({ points: -1 }); // leaderboard sorting
+userSchema.index({ totalSessions: -1 });
+
 export default mongoose.model("User", userSchema);
