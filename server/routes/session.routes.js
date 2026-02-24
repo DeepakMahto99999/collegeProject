@@ -9,6 +9,7 @@ import {
   completeSession,
   resetSession
 } from "../controllers/session.controller.js";
+import { handleSessionEvent } from "../controllers/sessionEvents.controller.js";
 
 const router = express.Router();
 
@@ -28,6 +29,8 @@ router.post("/heartbeat/:sessionId", authUser, heartbeatFocus);
 router.post("/complete/:sessionId", authUser, completeSession);
 
 // 🔹 Manual reset
-router.post("/reset/:sessionId", authUser, resetSession);
+router.post("/reset/:sessionId", authUser, resetSession); 
+
+router.post("/:sessionId/events", authUser,handleSessionEvent)
 
 export default router;

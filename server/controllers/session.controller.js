@@ -295,6 +295,7 @@ export const videoEvent = async (req, res) => {
   }
 };
 
+
 // ============================================================
 // 4️⃣ HEARTBEAT (Server Focus Accumulation)
 // ============================================================
@@ -313,6 +314,7 @@ export const heartbeatFocus = async (req, res) => {
       return res.status(400).json({ success: false });
     }
 
+    // 🔥 1️⃣ Enforce recovery expiry FIRST
     enforceRecoveryIfExpired(session);
 
     if (session.status === "INVALID") {
@@ -322,22 +324,43 @@ export const heartbeatFocus = async (req, res) => {
 
     const now = Date.now();
 
-    // If first heartbeat after RUNNING
+    // 🔥 2️⃣ Accumulate hidden time if still hidden (ANTI-EXPLOIT)
+    if (session.lastHiddenStart) {
+
+      const hiddenSeconds = Math.floor(
+        (now - session.lastHiddenStart.getTime()) / 1000
+      );
+
+      session.totalHiddenSeconds += hiddenSeconds;
+      session.lastHiddenStart = new Date(now);
+
+      const maxAllowed = session.focusLength * 60 * 0.2;
+
+      if (session.totalHiddenSeconds > maxAllowed) {
+        session.status = "INVALID";
+        session.invalidReason = "EXCESSIVE_TAB_AWAY";
+
+        await session.save();
+        return res.status(400).json({ success: false });
+      }
+    }
+
+    // 🔥 3️⃣ If first heartbeat
     if (!session.lastHeartbeatAt) {
       session.lastHeartbeatAt = new Date(now);
       await session.save();
       return res.json({ success: true });
     }
 
-    const last = new Date(session.lastHeartbeatAt).getTime();
+    const last = session.lastHeartbeatAt.getTime();
     const diffSeconds = Math.floor((now - last) / 1000);
 
-    // Reject if too fast (spam)
+    // Reject spam
     if (diffSeconds <= 0) {
       return res.json({ success: false });
     }
 
-    // Cap max heartbeat gain (anti-cheat)
+    // Cap heartbeat gain
     const safeSeconds = Math.min(diffSeconds, 30);
 
     session.totalFocusSeconds += safeSeconds;
