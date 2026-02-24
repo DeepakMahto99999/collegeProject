@@ -290,6 +290,14 @@ export const videoEvent = async (req, res) => {
     });
 
   } catch (err) {
+
+    if (err.name === "VersionError") {
+      return res.status(409).json({
+        success: false,
+        message: "Session state changed, retry"
+      });
+    }
+
     console.error("VideoEvent error:", err);
     return res.status(500).json({ success: false });
   }

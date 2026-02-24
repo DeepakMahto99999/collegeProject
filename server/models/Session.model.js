@@ -94,6 +94,9 @@ const sessionSchema = new mongoose.Schema({
     ]
   },
 
-}, { timestamps: true });
+}, {
+  timestamps: true,
+  optimisticConcurrency: true
+});
 
 export default mongoose.model("Session", sessionSchema);
