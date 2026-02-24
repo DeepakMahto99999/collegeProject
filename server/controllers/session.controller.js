@@ -322,7 +322,7 @@ export const heartbeatFocus = async (req, res) => {
       return res.status(400).json({ success: false });
     }
 
-    // 1 Enforce recovery expiry FIRST
+    // 1. Enforce recovery expiry FIRST
     enforceRecoveryIfExpired(session);
 
     if (session.status === "INVALID") {
@@ -332,9 +332,22 @@ export const heartbeatFocus = async (req, res) => {
 
     const now = Date.now();
 
-    // ============================================================
-    // 2 Accumulate hidden time if still hidden (ANTI-EXPLOIT)
-    // ============================================================
+    // 2 Auto-expire zombie session (5 min inactivity)
+    if (session.lastHeartbeatAt) {
+
+      const inactiveSeconds =
+        (now - session.lastHeartbeatAt.getTime()) / 1000;
+
+      if (inactiveSeconds > 300) { // 5 minutes
+        session.status = "INVALID";
+        session.invalidReason = "NETWORK_ABORT";
+
+        await session.save();
+        return res.status(400).json({ success: false });
+      }
+    }
+
+    // 3. Accumulate hidden time if still hidden
     if (session.lastHiddenStart) {
 
       const hiddenSeconds = Math.floor(
@@ -355,9 +368,8 @@ export const heartbeatFocus = async (req, res) => {
       }
     }
 
-    // ============================================================
-    // 3  Accumulate pause time if still paused (ANTI-EXPLOIT)
-    // ============================================================
+
+    // 4. Accumulate pause time if still paused
     if (session.lastPauseStart) {
 
       const pauseSeconds = Math.floor(
@@ -378,9 +390,7 @@ export const heartbeatFocus = async (req, res) => {
       }
     }
 
-    // ============================================================
-    // 4 First heartbeat handling
-    // ============================================================
+    // 5. First heartbeat handling
     if (!session.lastHeartbeatAt) {
       session.lastHeartbeatAt = new Date(now);
       await session.save();
@@ -390,12 +400,11 @@ export const heartbeatFocus = async (req, res) => {
     const last = session.lastHeartbeatAt.getTime();
     const diffSeconds = Math.floor((now - last) / 1000);
 
-    // Reject spam / duplicate calls
     if (diffSeconds <= 0) {
       return res.json({ success: false });
     }
 
-    // Cap heartbeat gain (anti-cheat)
+    // Cap gain (anti-cheat)
     const safeSeconds = Math.min(diffSeconds, 30);
 
     session.totalFocusSeconds += safeSeconds;
@@ -410,6 +419,7 @@ export const heartbeatFocus = async (req, res) => {
     return res.status(500).json({ success: false });
   }
 };
+
 
 
 // ============================================================
