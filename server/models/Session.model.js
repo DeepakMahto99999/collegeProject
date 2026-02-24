@@ -73,9 +73,6 @@ const sessionSchema = new mongoose.Schema({
     default: 0
   },
 
-  // AI ANALYTICS
-  aiConfidenceAverage: Number,
-
   completed: {
     type: Boolean,
     default: false,
