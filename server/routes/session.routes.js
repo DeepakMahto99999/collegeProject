@@ -12,6 +12,7 @@ import {
 import { handleSessionEvent } from "../controllers/sessionEvents.controller.js";
 import { validate } from "../middlewares/validate.middleware.js";
 import { completeSessionSchema, heartbeatSchema, resetSessionSchema, sessionEventSchema, startSessionSchema, videoEventSchema } from "../validators/session.validator.js";
+import { aiLimiter, userActionLimiter } from "../middlewares/rateLimit.middleware.js";
 
 const router = express.Router();
 
@@ -22,10 +23,10 @@ router.get("/current", authUser, getCurrentSession);
 router.post("/start", authUser, validate(startSessionSchema) , startSession);
 
 // 🔹 AI validation when video changes
-router.post("/video-event", authUser, validate(videoEventSchema) , videoEvent);
+router.post("/video-event", authUser, aiLimiter, validate(videoEventSchema) , videoEvent);
 
 // 🔹 Heartbeat focus accumulation
-router.post("/heartbeat/:sessionId", authUser, validate(heartbeatSchema) , heartbeatFocus);
+router.post("/heartbeat/:sessionId", authUser, userActionLimiter, validate(heartbeatSchema) , heartbeatFocus);
 
 // 🔹 Complete session
 router.post("/complete/:sessionId", authUser, validate(completeSessionSchema) , completeSession);
@@ -33,6 +34,6 @@ router.post("/complete/:sessionId", authUser, validate(completeSessionSchema) , 
 // 🔹 Manual reset
 router.post("/reset/:sessionId", authUser, validate(resetSessionSchema) , resetSession); 
 
-router.post("/:sessionId/events", authUser, validate(sessionEventSchema) ,  handleSessionEvent)
+router.post("/:sessionId/events", authUser,userActionLimiter , validate(sessionEventSchema) ,  handleSessionEvent)
 
 export default router;
