@@ -3,7 +3,7 @@ import User from "../models/User.model.js";
 import AiCache from "../models/AICache.model.js";
 import { checkAndUnlockAchievements } from "./achievements.controller.js";
 import { aiJudgeService } from "../services/aiJudge.service.js"; // you must implement
-
+import mongoose from "mongoose";
 
 // ============================================================
 // Confidence Rule Helper
@@ -426,51 +426,72 @@ export const heartbeatFocus = async (req, res) => {
 // 5️⃣ COMPLETE SESSION
 // ============================================================
 export const completeSession = async (req, res) => {
+  const mongoSession = await mongoose.startSession();
+
   try {
     const userId = req.user.userId;
     const { sessionId } = req.params;
 
-    const session = await Session.findOne({
-      _id: sessionId,
-      userId,
-      status: "RUNNING"
+    await mongoSession.withTransaction(async () => {
+
+      const session = await Session.findOne({
+        _id: sessionId,
+        userId,
+        status: "RUNNING"
+      }).session(mongoSession);
+
+      if (!session) {
+        throw new Error("SESSION_NOT_FOUND");
+      }
+
+      const requiredSeconds = session.focusLength * 60;
+
+      if (session.totalFocusSeconds < requiredSeconds) {
+        throw new Error("FOCUS_NOT_COMPLETED");
+      }
+
+      if (session.completed) {
+        return; // no changes needed
+      }
+
+      session.status = "COMPLETED";
+      session.completed = true;
+
+      await session.save({ session: mongoSession });
+
+      const user = await User.findById(userId).session(mongoSession);
+
+      if (!user) {
+        throw new Error("USER_NOT_FOUND");
+      }
+
+      user.totalSessions += 1;
+      user.totalFocusMinutes += session.focusLength;
+      user.points += session.focusLength * 2;
+
+      await user.save({ session: mongoSession });
+
+      await checkAndUnlockAchievements(userId, session, mongoSession);
     });
 
-    if (!session) {
-      return res.status(400).json({ success: false });
-    }
+    mongoSession.endSession();
+    return res.json({ success: true });
 
-    const requiredSeconds = session.focusLength * 60;
+  } catch (err) {
+    mongoSession.endSession();
 
-    if (session.totalFocusSeconds < requiredSeconds) {
+    if (err.message === "FOCUS_NOT_COMPLETED") {
       return res.status(400).json({
         success: false,
         message: "Focus time not completed"
       });
     }
 
-    if (session.completed) {
-      return res.json({ success: true });
+    if (err.message === "SESSION_NOT_FOUND") {
+      return res.status(400).json({ success: false });
     }
 
-    session.status = "COMPLETED";
-    session.completed = true;
-
-    await session.save();
-
-    const user = await User.findById(userId);
-
-    user.totalSessions += 1;
-    user.totalFocusMinutes += session.focusLength;
-    user.points += session.focusLength * 2;
-
-    await user.save();
-
-    await checkAndUnlockAchievements(userId, session);
-
-    return res.json({ success: true });
-
-  } catch {
+    console.error("CompleteSession TX error:", err);
     return res.status(500).json({ success: false });
   }
 };

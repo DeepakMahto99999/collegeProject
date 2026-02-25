@@ -100,15 +100,15 @@ export const getAchievementPreview = async (req, res) => {
 };
 
 
-export const checkAndUnlockAchievements = async (userId, session) => {
+export const checkAndUnlockAchievements = async (userId, session, mongoSession = null) => {
 
   try {
 
-    const user = await User.findById(userId);
+    const user = await User.findById(userId).session(mongoSession)
     if (!user) return;
 
-    const achievements = await Achievement.find({ isActive: true });
-    const unlocked = await UserAchievement.find({ userId });
+    const achievements = await Achievement.find({ isActive: true }).session(mongoSession)
+    const unlocked = await UserAchievement.find({ userId }).session(mongoSession)
 
     const unlockedSet = new Set(
       unlocked.map(a => a.achievementId.toString())
@@ -150,7 +150,7 @@ export const checkAndUnlockAchievements = async (userId, session) => {
               userId,
               completed: true,
               createdAt: { $gte: startOfMonth }
-            });
+            }).session(mongoSession);
 
             monthlyMinutes = monthlySessions.reduce(
               (acc, s) => acc + s.focusLength,
@@ -166,11 +166,11 @@ export const checkAndUnlockAchievements = async (userId, session) => {
       }
 
       if (qualifies) {
-        await UserAchievement.create({
+        await UserAchievement.create([{
           userId,
           achievementId: ach._id,
           unlockedAt: new Date()
-        });
+        }], { session: mongoSession });
       }
 
     }
