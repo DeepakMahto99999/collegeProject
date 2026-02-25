@@ -8,12 +8,14 @@ import {
   getDailyPattern,
   getMonthlyStats
 } from "../controllers/statistics.controller.js";
+import { validate } from "../middlewares/validate.middleware.js";
+import { recentSessionsSchema } from "../validators/statistics.validator.js";
 
 const router = express.Router();
 
 router.get("/today", authUser, getTodayStats);
 
-router.get("/recent", authUser, getRecentSessions);
+router.get("/recent", authUser, validate(recentSessionsSchema), getRecentSessions);
 
 router.get("/weekly", authUser, getWeeklyStats);
 
