@@ -1,4 +1,5 @@
 import express from 'express'
+import helmet from "helmet"
 import cors from 'cors'
 import 'dotenv/config';
 import cookieParser from 'cookie-parser'
@@ -22,32 +23,39 @@ const PORT = process.env.PORT || 5000;
 
 connectDB();
 
-app.set("trust proxy" , 1);
+app.set("trust proxy", 1);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+app.use(
+    helmet({
+        contentSecurityPolicy: false
+    })
+);
+
 app.use(cors({
-  origin: process.env.CLIENT_URL,
-  credentials: true
+    origin: process.env.CLIENT_URL,
+    credentials: true
 }));
 
 app.use(requestLogger)
 app.use("/api", apiLimiter);
 
-app.get('/' , (req,res) => {
+app.get('/', (req, res) => {
     res.send('FocusTube Backed Running')
 });
 
-app.use('/api/auth',authRouter);
+app.use('/api/auth', authRouter);
 app.use('/api/sessions', sessionRoutes);
 app.use("/api/achievements", achievementRoutes);
-app.use("/api/dashboard",dashboardRoutes)
-app.use("/api/leaderboard",leaderboardRoutes)
-app.use("/api/statistics",statisticsRoutes)
+app.use("/api/dashboard", dashboardRoutes)
+app.use("/api/leaderboard", leaderboardRoutes)
+app.use("/api/statistics", statisticsRoutes)
 
 app.use(errorHandler);
 
-app.listen(PORT,() => {
+app.listen(PORT, () => {
     logger.info(`Server running on port http://localhost:${PORT}`)
 })
