@@ -1,213 +1,263 @@
+import mongoose from "mongoose";
 import Session from "../models/Session.model.js";
+import asyncHandler from "../middlewares/asyncHandler.middleware.js";
+import AppError from "../utils/AppError.js";
+
+
+// ============================================================
+// TODAY STATS (Aggregation Based)
+// ============================================================
+
+export const getTodayStats = asyncHandler(async (req, res) => {
+
+  const userId = req.user.userId;
+
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+
+  const result = await Session.aggregate([
+    {
+      $match: {
+        userId: new mongoose.Types.ObjectId(userId),
+        completed: true,
+        startTime: { $gte: start }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        totalSeconds: { $sum: "$totalFocusSeconds" },
+        sessions: { $sum: 1 }
+      }
+    }
+  ]);
+
+  const totalSeconds = result[0]?.totalSeconds || 0;
+  const sessionsCount = result[0]?.sessions || 0;
+
+  res.json({
+    success: true,
+    sessions: sessionsCount,
+    focusMinutes: Math.round(totalSeconds / 60)
+  });
+});
 
 
 
-// TODAY STATS - completed
+// ============================================================
+// RECENT SESSIONS (Timeline - Same Logic)
+// ============================================================
 
-export const getTodayStats = async (req, res) => {
-  try {
+export const getRecentSessions = asyncHandler(async (req, res) => {
 
-    const userId = req.user.userId;
+  const userId = req.user.userId;
 
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
+  const rawLimit = Number(req.query.limit) || 5;
 
-    const sessions = await Session.find({
-      userId,
-      completed: true,
-      startTime: { $gte: start }
-    }).lean();
-
-    const totalSeconds = sessions.reduce(
-      (acc, s) => acc + (s.totalFocusSeconds || 0),
-      0
-    );
-
-    return res.json({
-      success: true,
-      sessions: sessions.length,
-      focusMinutes: Math.round(totalSeconds / 60)
-    });
-
-  } catch (err) {
-    console.error("Today stats error:", err);
-    res.status(500).json({ success: false });
+  if (isNaN(rawLimit) || rawLimit <= 0) {
+    throw new AppError("Invalid limit parameter", 400);
   }
-};
+
+  const limit = Math.min(rawLimit, 50);
+
+  const sessions = await Session.find({ userId })
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .lean();
+
+  const mapped = sessions.map(s => ({
+    topic: s.topic,
+    focusLength: s.focusLength,
+    startedAt: s.startTime,
+    status: s.status,
+    statusLabel:
+      s.status === "COMPLETED" ? "Completed" :
+      s.status === "INVALID" ? "Stopped" :
+      s.status === "RUNNING" ? "Running" :
+      "Not Started"
+  }));
+
+  res.json({
+    success: true,
+    sessions: mapped
+  });
+});
 
 
 
-// RECENT SESSIONS (TIMELINE)
-// BOTH COMPLETE + INCOMPLETE
-// Because this is timeline / activity history, not performance metric.
-export const getRecentSessions = async (req, res) => {
-  try {
+// ============================================================
+// WEEKLY STATS (Aggregation Grouped by Weekday)
+// ============================================================
 
-    const userId = req.user.userId;
-    const limit = Number(req.query.limit) || 5;
+export const getWeeklyStats = asyncHandler(async (req, res) => {
 
-    const sessions = await Session.find({ userId })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .lean();
+  const userId = req.user.userId;
 
-    const mapped = sessions.map(s => ({
+  const start = new Date();
+  start.setDate(start.getDate() - 6);
+  start.setHours(0, 0, 0, 0);
 
-      topic: s.topic,
-      focusLength: s.focusLength,
-      startedAt: s.startTime,
-      status: s.status,
+  const result = await Session.aggregate([
+    {
+      $match: {
+        userId: new mongoose.Types.ObjectId(userId),
+        completed: true,
+        startTime: { $gte: start }
+      }
+    },
+    {
+      $group: {
+        _id: { $dayOfWeek: "$startTime" },
+        totalMinutes: { $sum: { $divide: ["$totalFocusSeconds", 60] } }
+      }
+    }
+  ]);
 
-      statusLabel:
-        s.status === "COMPLETED" ? "Completed" :
-        s.status === "INVALID" ? "Stopped" :
-        s.status === "RUNNING" ? "Running" :
-        "Not Started"
+  const daily = {
+    Mon: 0, Tue: 0, Wed: 0,
+    Thu: 0, Fri: 0, Sat: 0, Sun: 0
+  };
 
-    }));
+  const dayMap = {
+    1: "Sun",
+    2: "Mon",
+    3: "Tue",
+    4: "Wed",
+    5: "Thu",
+    6: "Fri",
+    7: "Sat"
+  };
 
-    res.json({
-      success: true,
-      sessions: mapped
-    });
+  result.forEach(r => {
+    const dayKey = dayMap[r._id];
+    if (dayKey) {
+      daily[dayKey] = r.totalMinutes;
+    }
+  });
 
-  } catch (err) {
-    console.error("Recent stats error:", err);
-    res.status(500).json({ success: false });
-  }
-};
+  res.json({
+    success: true,
+    daily
+  });
+});
 
 
 
+// ============================================================
+// DAILY PATTERN (Grouped by 2-hour Buckets)
+// ============================================================
 
-// WEEKLY GRAPH DATA - completed 
+export const getDailyPattern = asyncHandler(async (req, res) => {
 
-export const getWeeklyStats = async (req, res) => {
-  try {
+  const userId = req.user.userId;
 
-    const userId = req.user.userId;
+  const result = await Session.aggregate([
+    {
+      $match: {
+        userId: new mongoose.Types.ObjectId(userId),
+        completed: true,
+        startTime: { $ne: null }
+      }
+    },
+    {
+      $project: {
+        bucket: {
+          $concat: [
+            {
+              $toString: {
+                $multiply: [
+                  { $floor: { $divide: [{ $hour: "$startTime" }, 2] } },
+                  2
+                ]
+              }
+            },
+            ":00"
+          ]
+        },
+        minutes: { $divide: ["$totalFocusSeconds", 60] }
+      }
+    },
+    {
+      $group: {
+        _id: "$bucket",
+        totalMinutes: { $sum: "$minutes" }
+      }
+    }
+  ]);
 
-    const start = new Date();
-    start.setDate(start.getDate() - 6);
-    start.setHours(0, 0, 0, 0);
+  const buckets = {};
 
-    const sessions = await Session.find({
-      userId,
-      completed: true,
-      startTime: { $gte: start }
-    }).lean();
+  result.forEach(r => {
+    buckets[r._id] = r.totalMinutes;
+  });
 
-    const daily = {
-      Mon: 0, Tue: 0, Wed: 0,
-      Thu: 0, Fri: 0, Sat: 0, Sun: 0
+  res.json({
+    success: true,
+    pattern: buckets
+  });
+});
+
+
+
+// ============================================================
+// MONTHLY STATS (Grouped by Week of Month)
+// ============================================================
+
+export const getMonthlyStats = asyncHandler(async (req, res) => {
+
+  const userId = req.user.userId;
+
+  const start = new Date();
+  start.setDate(1);
+  start.setHours(0, 0, 0, 0);
+
+  const result = await Session.aggregate([
+    {
+      $match: {
+        userId: new mongoose.Types.ObjectId(userId),
+        startTime: { $gte: start }
+      }
+    },
+    {
+      $project: {
+        week: {
+          $concat: [
+            "Week ",
+            {
+              $toString: {
+                $ceil: { $divide: [{ $dayOfMonth: "$startTime" }, 7] }
+              }
+            }
+          ]
+        },
+        hours: { $divide: ["$totalFocusSeconds", 3600] },
+        completed: 1
+      }
+    },
+    {
+      $group: {
+        _id: "$week",
+        hours: { $sum: "$hours" },
+        sessions: {
+          $sum: {
+            $cond: [{ $eq: ["$completed", true] }, 1, 0]
+          }
+        }
+      }
+    }
+  ]);
+
+  const monthly = {};
+
+  result.forEach(r => {
+    monthly[r._id] = {
+      hours: r.hours,
+      sessions: r.sessions
     };
+  });
 
-    sessions.forEach(s => {
-
-      const day = s.startTime.toLocaleDateString(
-        "en-US",
-        { weekday: "short" }
-      );
-
-      daily[day] += (s.totalFocusSeconds || 0) / 60;
-
-    });
-
-    res.json({
-      success: true,
-      daily
-    });
-
-  } catch (err) {
-    console.error("Weekly stats error:", err);
-    res.status(500).json({ success: false });
-  }
-};
-
-
-
-// DAILY PATTERN - ONLY COMPLETED
-export const getDailyPattern = async (req, res) => {
-  try {
-
-    const userId = req.user.userId;
-
-    const sessions = await Session.find({
-      userId,
-      completed: true
-    }).lean();
-
-    const buckets = {};
-
-    sessions.forEach(s => {
-
-      const hour = s.startTime.getHours();
-      const bucket = `${Math.floor(hour / 2) * 2}:00`;
-
-      buckets[bucket] =
-        (buckets[bucket] || 0) +
-        (s.totalFocusSeconds || 0) / 60;
-
-    });
-
-    res.json({
-      success: true,
-      pattern: buckets
-    });
-
-  } catch (err) {
-    console.error("Daily pattern error:", err);
-    res.status(500).json({ success: false });
-  }
-};
-
-
-
-// ===============================
-// MONTHLY GRAPH - Mixed 
-// Hours → All sessions
-// Session count → Only completed
-export const getMonthlyStats = async (req, res) => {
-  try {
-
-    const userId = req.user.userId;
-
-    const start = new Date();
-    start.setDate(1);
-    start.setHours(0, 0, 0, 0);
-
-    const sessions = await Session.find({
-      userId,
-      startTime: { $gte: start }
-    }).lean();
-
-    const monthly = {};
-
-    sessions.forEach(s => {
-
-      const week =
-        `Week ${Math.ceil(s.startTime.getDate() / 7)}`;
-
-      if (!monthly[week]) {
-        monthly[week] = { hours: 0, sessions: 0 };
-      }
-
-      monthly[week].hours +=
-        (s.totalFocusSeconds || 0) / 3600;
-
-      if (s.completed) {
-        monthly[week].sessions += 1;
-      }
-
-    });
-
-    res.json({
-      success: true,
-      monthly
-    });
-
-  } catch (err) {
-    console.error("Monthly stats error:", err);
-    res.status(500).json({ success: false });
-  }
-};
+  res.json({
+    success: true,
+    monthly
+  });
+});

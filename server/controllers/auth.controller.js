@@ -1,7 +1,8 @@
-import validator from "validator";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import UserModel from "../models/User.model.js";
+import asyncHandler from "../middlewares/asyncHandler.middleware.js";
+import AppError from "../utils/AppError.js";
 
 
 //  TOKEN GENERATOR (Reusable)
@@ -27,144 +28,93 @@ const setAuthCookie = (res, token) => {
 
 
 // ================= REGISTER =================
-export const registerUser = async (req, res) => {
-  try {
+const SALT_ROUNDS = Number(process.env.BCRYPT_ROUNDS) || 12;
 
-    const { name, email, password } = req.body;
+export const registerUser = asyncHandler(async (req, res) => {
 
-    // Validate
-    if (!name || !email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "All fields required"
-      });
-    }
+  const { name, email, password } = req.body;
 
-    if (!validator.isEmail(email)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid email"
-      });
-    }
+  const normalizedEmail = email.trim().toLowerCase();
 
-    if (password.length < 8) {
-      return res.status(400).json({
-        success: false,
-        message: "Password must be >= 8 chars"
-      });
-    }
+  const exists = await UserModel.findOne({ email: normalizedEmail }).lean();
 
-    // Existing check
-    const exists = await UserModel.findOne({ email }).lean();
-    if (exists) {
-      return res.status(409).json({
-        success: false,
-        message: "Email already registered"
-      });
-    }
-
-    // Hash
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Create
-    const user = await UserModel.create({
-      name,
-      email,
-      password: hashedPassword
-    });
-
-    // Token
-    const token = generateToken(user._id);
-    setAuthCookie(res, token);
-
-    return res.status(201).json({
-      success: true,
-      data: {
-        token,
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email
-        }
-      }
-    });
-
-  } catch (err) {
-    console.error("Register error:", err);
-    res.status(500).json({ success: false });
+  if (exists) {
+    throw new AppError("Email already registered", 409);
   }
-};
+
+  const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+
+  const user = await UserModel.create({
+    name,
+    email: normalizedEmail,
+    password: hashedPassword
+  });
+
+  const token = generateToken(user._id);
+  setAuthCookie(res, token);
+
+  res.status(201).json({
+    success: true,
+    data: {
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email
+      }
+    }
+  });
+});
 
 
 
 // ================= LOGIN =================
-export const loginUser = async (req, res) => {
-  try {
+export const loginUser = asyncHandler(async (req, res) => {
 
-    const { email, password } = req.body;
+  const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "Email & password required"
-      });
-    }
+  const normalizedEmail = email.trim().toLowerCase();
 
-    const user = await UserModel.findOne({ email });
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid credentials"
-      });
-    }
+  const user = await UserModel
+    .findOne({ email: normalizedEmail });
 
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid credentials"
-      });
-    }
-
-    const token = generateToken(user._id);
-    setAuthCookie(res, token);
-
-    return res.json({
-      success: true,
-      data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email
-        }
-      }
-    });
-
-  } catch (err) {
-    console.error("Login error:", err);
-    res.status(500).json({ success: false });
+  if (!user) {
+    throw new AppError("Invalid credentials", 401);
   }
-};
+
+  const match = await bcrypt.compare(password, user.password);
+
+  if (!match) {
+    throw new AppError("Invalid credentials", 401);
+  }
+
+  const token = generateToken(user._id);
+  setAuthCookie(res, token);
+
+  res.json({
+    success: true,
+    data: {
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email
+      }
+    }
+  });
+});
 
 
 
 // ================= LOGOUT =================
-export const logoutUser = async (req, res) => {
-  try {
+export const logoutUser = asyncHandler(async (req, res) => {
 
-    res.clearCookie("token", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax"
-    });
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax"
+  });
 
-    return res.json({
-      success: true,
-      message: "Logged out"
-    });
-
-  } catch (err) {
-    console.error("Logout error:", err);
-    res.status(500).json({ success: false });
-  }
-};
+  res.json({
+    success: true,
+    message: "Logged out"
+  });
+});

@@ -1,7 +1,11 @@
 import Session from "../models/Session.model.js";
 import SessionEvent from "../models/SessionEvent.model.js";
+import asyncHandler from "../middlewares/asyncHandler.middleware.js";
+import AppError from "../utils/AppError.js";
 
-// 🔥 IMPORTANT: copy same expiry enforcer logic
+
+
+// Recovery Expiry Enforcer
 function enforceRecoveryIfExpired(session) {
     if (
         session.recoveryActive &&
@@ -15,95 +19,99 @@ function enforceRecoveryIfExpired(session) {
     }
 }
 
-export const handleSessionEvent = async (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const { sessionId } = req.params;
-        const { eventId, type, clientTimestamp } = req.body;
 
-        const session = await Session.findOne({ _id: sessionId, userId });
 
-        if (!session) {
-            return res.status(400).json({ success: false });
-        }
+// Handle Session Event
+export const handleSessionEvent = asyncHandler(async (req, res) => {
 
-        // 🔥 Enforce recovery expiry first
-        enforceRecoveryIfExpired(session);
+    const userId = req.user.userId;
+    const { sessionId } = req.params;
+    const { eventId, type, clientTimestamp } = req.body;
 
-        if (session.status === "INVALID") {
-            await session.save();
-            return res.json({
-                success: true,
-                status: session.status,
-                invalidReason: session.invalidReason
-            });
-        }
+    const session = await Session.findOne({ _id: sessionId, userId });
 
-        if (session.status !== "RUNNING") {
-            return res.json({ success: true });
-        }
+    if (!session) {
+        throw new AppError("Session not found", 400);
+    }
 
-        // 🔒 Prevent duplicate events
-        const existing = await SessionEvent.findOne({ eventId });
-        if (existing) {
-            return res.json({ success: true });
-        }
+    // Enforce recovery expiry FIRST
+    enforceRecoveryIfExpired(session);
 
-        const now = new Date();
-
-        // Save event log
-        await SessionEvent.create({
-            sessionId,
-            userId,
-            eventId,
-            type,
-            clientTimestamp,
-            serverTimestamp: now
-        });
-
-        switch (type) {
-
-            case "SHORTS_DETECTED":
-                session.status = "INVALID";
-                session.invalidReason = "SHORTS_NOT_ALLOWED";
-                break;
-
-            case "TAB_HIDDEN_START":
-                session.lastHiddenStart = now;
-                break;
-
-            case "TAB_HIDDEN_END":
-                handleTabHiddenEnd(session, now);
-                break;
-
-            case "PAUSE_START":
-                session.lastPauseStart = now;
-                break;
-
-            case "PAUSE_END":
-                handlePauseEnd(session, now);
-                break;
-
-            default:
-                break;
-        }
-
+    if (session.status === "INVALID") {
         await session.save();
-
         return res.json({
             success: true,
             status: session.status,
             invalidReason: session.invalidReason
         });
-
-    } catch (err) {
-        console.error("SessionEvent error:", err);
-        return res.status(500).json({ success: false });
     }
-};
+
+    // Only allow event processing when RUNNING
+    if (session.status !== "RUNNING") {
+        return res.json({ success: true });
+    }
+
+    const now = new Date();
+
+    // Idempotent Event Insert (DB-level protection)
+    try {
+        await SessionEvent.create({
+            sessionId,
+            userId,
+            eventId,
+            type,
+            clientTimestamp, // stored but never trusted
+            serverTimestamp: now
+        });
+    } catch (err) {
+        // Duplicate eventId (unique index)
+        if (err.code === 11000) {
+            return res.json({ success: true });
+        }
+        throw err;
+    }
+
+    // Event State Handling
+    switch (type) {
+
+        case "SHORTS_DETECTED":
+            session.status = "INVALID";
+            session.invalidReason = "SHORTS_NOT_ALLOWED";
+            break;
+
+        case "TAB_HIDDEN_START":
+            session.lastHiddenStart = now;
+            break;
+
+        case "TAB_HIDDEN_END":
+            handleTabHiddenEnd(session, now);
+            break;
+
+        case "PAUSE_START":
+            session.lastPauseStart = now;
+            break;
+
+        case "PAUSE_END":
+            handlePauseEnd(session, now);
+            break;
+
+        default:
+            break;
+    }
+
+    await session.save();
+
+    res.json({
+        success: true,
+        status: session.status,
+        invalidReason: session.invalidReason
+    });
+});
 
 
+// Hidden Tab End Handler
 function handleTabHiddenEnd(session, now) {
+
     if (!session.lastHiddenStart) return;
 
     const hiddenSeconds = Math.floor(
@@ -123,7 +131,9 @@ function handleTabHiddenEnd(session, now) {
 }
 
 
+// Pause End Handler
 function handlePauseEnd(session, now) {
+
     if (!session.lastPauseStart) return;
 
     const pauseSeconds = Math.floor(

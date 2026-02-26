@@ -1,63 +1,48 @@
 import User from "../models/User.model.js";
-
+import asyncHandler from "../middlewares/asyncHandler.middleware.js";
+import AppError from "../utils/AppError.js";
 
 // ===============================
 // GET LEADERBOARD
 // ===============================
-export const getLeaderboard = async (req, res) => {
-  try {
+export const getLeaderboard = asyncHandler(async (req, res) => {
 
-    const userId = req.user.userId;
+  const userId = req.user.userId;
 
-    // ---- Parallel Queries ----
-    const [topUsers, currentUser] = await Promise.all([
+  const [topUsers, currentUser] = await Promise.all([
 
-      User.find()
-        .select("name avatar totalSessions currentStreak points")
-        .sort({ points: -1 })
-        .limit(50)
-        .lean(),
+    User.find()
+      .select("name avatar totalSessions currentStreak points")
+      .sort({ points: -1, totalSessions: -1 })
+      .limit(50)
+      .lean(),
 
-      User.findById(userId)
-        .select("name avatar totalSessions currentStreak points")
-        .lean()
-    ]);
+    User.findById(userId)
+      .select("name avatar totalSessions currentStreak points")
+      .lean()
+  ]);
 
-    if (!currentUser) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found"
-      });
-    }
-
-    // ---- Current Rank ----
-    const higherUsersCount = await User.countDocuments({
-      points: { $gt: currentUser.points }
-    });
-
-    const currentRank = higherUsersCount + 1;
-
-    // ---- Add isCurrentUser Flag ----
-    const leaderboard = topUsers.map(u => ({
-      ...u,
-      isCurrentUser: u._id.toString() === userId
-    }));
-
-
-    return res.json({
-      success: true,
-
-      leaderboard,
-
-      currentUser: {
-        rank: currentRank,
-        ...currentUser
-      }
-
-    });
-
-  } catch (err) {
-    console.error("Leaderboard error:", err);
-    res.status(500).json({ success: false });
+  if (!currentUser) {
+    throw new AppError("User not found", 404);
   }
-};
+
+  const higherUsersCount = await User.countDocuments({
+    points: { $gt: currentUser.points }
+  });
+
+  const currentRank = higherUsersCount + 1;
+
+  const leaderboard = topUsers.map(u => ({
+    ...u,
+    isCurrentUser: u._id.toString() === userId
+  }));
+
+  res.json({
+    success: true,
+    leaderboard,
+    currentUser: {
+      rank: currentRank,
+      ...currentUser
+    }
+  });
+});

@@ -12,6 +12,9 @@ import dashboardRoutes from './routes/dashboard.routes.js'
 import leaderboardRoutes from './routes/leaderboard.routes.js'
 import statisticsRoutes from './routes/statistics.routes.js'
 import { apiLimiter } from './middlewares/rateLimit.middleware.js';
+import { requestLogger } from './middlewares/requestLogger.middleware.js';
+import { errorHandler } from './middlewares/errorHandler.middleware.js';
+import logger from './utils/logger.js';
 
 
 const app = express();
@@ -24,8 +27,12 @@ app.set("trust proxy" , 1);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-app.use(cors()); 
+app.use(cors({
+  origin: process.env.CLIENT_URL,
+  credentials: true
+}));
 
+app.use(requestLogger)
 app.use("/api", apiLimiter);
 
 app.get('/' , (req,res) => {
@@ -39,6 +46,8 @@ app.use("/api/dashboard",dashboardRoutes)
 app.use("/api/leaderboard",leaderboardRoutes)
 app.use("/api/statistics",statisticsRoutes)
 
+app.use(errorHandler);
+
 app.listen(PORT,() => {
-    console.log(`Server running on port http://localhost:${PORT}`)
+    logger.info(`Server running on port http://localhost:${PORT}`)
 })

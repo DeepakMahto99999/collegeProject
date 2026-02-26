@@ -1,35 +1,29 @@
+import mongoose from "mongoose";
 import Session from "../models/Session.model.js";
 import User from "../models/User.model.js";
 import AiCache from "../models/AICache.model.js";
 import { checkAndUnlockAchievements } from "./achievements.controller.js";
-import { aiJudgeService } from "../services/aiJudge.service.js"; // you must implement
-import mongoose from "mongoose";
+import { aiJudgeService } from "../services/aiJudge.service.js";
+import asyncHandler from "../middlewares/asyncHandler.middleware.js";
+import AppError from "../utils/AppError.js";
+
 
 // ============================================================
-// Confidence Rule Helper
+// Confidence Rule
 // ============================================================
+
 function applyConfidenceRule(aiResult) {
-  // 1️⃣ Validate AI response structure
-  if (
-    !aiResult ||
-    typeof aiResult.confidence !== "number"
-  ) {
+  if (!aiResult || typeof aiResult.confidence !== "number") {
     return {
       decision: "INVALID",
       confidence: 0,
-      reason: "Invalid AI response format"
+      reason: "Invalid AI response"
     };
   }
 
-  // 2️⃣ Normalize confidence safely between 0–1
-  const confidence = Math.max(
-    0,
-    Math.min(1, Number(aiResult.confidence))
-  );
+  const confidence = Math.max(0, Math.min(1, Number(aiResult.confidence)));
+  const THRESHOLD = 0.55;
 
-  const THRESHOLD = 0.55; // You can tune this later
-
-  // 3️⃣ Backend policy decision
   if (confidence >= THRESHOLD) {
     return {
       decision: "VALID",
@@ -45,9 +39,11 @@ function applyConfidenceRule(aiResult) {
   };
 }
 
+
 // ============================================================
-// Expiry Enforcer Helper
+// Recovery Expiry
 // ============================================================
+
 function enforceRecoveryIfExpired(session) {
   if (
     session.recoveryActive &&
@@ -61,376 +57,270 @@ function enforceRecoveryIfExpired(session) {
   }
 }
 
+
 // ============================================================
-// 1️⃣ GET CURRENT SESSION (Popup Sync Authority)
+// 1️⃣ GET CURRENT SESSION
 // ============================================================
-export const getCurrentSession = async (req, res) => {
-  try {
-    const userId = req.user.userId;
 
-    const session = await Session.findOne({
-      userId,
-      status: { $in: ["ARMED", "RUNNING"] }
-    }).sort({ createdAt: -1 });
+export const getCurrentSession = asyncHandler(async (req, res) => {
 
-    if (session) {
-      enforceRecoveryIfExpired(session);
-      await session.save();
-    }
+  const userId = req.user.userId;
 
-    const user = await User.findById(userId).lean();
+  const session = await Session.findOne({
+    userId,
+    status: { $in: ["ARMED", "RUNNING"] }
+  }).sort({ createdAt: -1 });
 
-    return res.json({
-      focusLength: user?.focusLength || 25,
-      session: session
-        ? {
+  if (session) {
+    enforceRecoveryIfExpired(session);
+    await session.save();
+  }
+
+  const user = await User.findById(userId).lean();
+  if (!user) {
+    throw new AppError("User not found", 404);
+  }
+
+  res.json({
+    focusLength: user.focusLength,
+    session: session
+      ? {
           id: session._id,
           topic: session.topic,
           status: session.status,
           startTime: session.startTime,
           invalidReason: session.invalidReason
         }
-        : null
-    });
+      : null
+  });
+});
 
-  } catch (err) {
-    return res.status(500).json({ success: false });
+
+// ============================================================
+// 2️⃣ START SESSION
+// ============================================================
+
+export const startSession = asyncHandler(async (req, res) => {
+
+  const userId = req.user.userId;
+  const { topic } = req.body;
+
+  const existing = await Session.findOne({
+    userId,
+    status: { $in: ["ARMED", "RUNNING"] }
+  });
+
+  if (existing) {
+    throw new AppError("Session already active", 400);
   }
-};
 
-// ============================================================
-// 2️⃣ START SESSION (Create ARMED Session)
-// ============================================================
-export const startSession = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const { topic } = req.body;
-
-    if (!topic || topic.trim().length < 2) {
-      return res.status(400).json({ success: false, message: "Valid topic required" });
-    }
-
-    const existing = await Session.findOne({
-      userId,
-      status: { $in: ["ARMED", "RUNNING"] }
-    });
-
-    if (existing) {
-      return res.status(400).json({
-        success: false,
-        message: "Session already active"
-      });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false });
-
-    const session = await Session.create({
-      userId,
-      topic: topic.trim().toLowerCase(),
-      focusLength: user.focusLength,
-      status: "ARMED",
-      startTime: null,
-      totalFocusSeconds: 0,
-      totalHiddenSeconds: 0,
-      hiddenEventCount: 0,
-      totalPauseSeconds: 0,
-      pauseEventCount: 0,
-      validatedVideos: {},
-      activeVideoId: null,
-      completed: false
-    });
-
-    return res.json({
-      success: true,
-      sessionId: session._id
-    });
-
-  } catch {
-    return res.status(500).json({ success: false });
+  const user = await User.findById(userId);
+  if (!user) {
+    throw new AppError("User not found", 404);
   }
-};
+
+  const session = await Session.create({
+    userId,
+    topic: topic.trim().toLowerCase(),
+    focusLength: user.focusLength,
+    status: "ARMED"
+  });
+
+  res.json({
+    success: true,
+    sessionId: session._id
+  });
+});
 
 
 // ============================================================
-// 3️⃣ VIDEO EVENT (AI PIPELINE — THE BRAIN)
+// 3️⃣ VIDEO EVENT
 // ============================================================
-export const videoEvent = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const { sessionId, videoId, title, description } = req.body;
 
-    const session = await Session.findOne({ _id: sessionId, userId });
+export const videoEvent = asyncHandler(async (req, res) => {
 
-    if (!session) {
-      return res.status(400).json({ success: false });
-    }
+  const userId = req.user.userId;
+  const { sessionId, videoId, title, description } = req.body;
 
-    // 🔥 1️⃣ Enforce expiry FIRST
-    enforceRecoveryIfExpired(session);
+  const session = await Session.findOne({ _id: sessionId, userId });
+  if (!session) {
+    throw new AppError("Session not found", 400);
+  }
 
-    if (session.status === "INVALID") {
-      await session.save();
+  enforceRecoveryIfExpired(session);
 
-      return res.json({
-        status: session.status,
-        invalidReason: session.invalidReason,
-        recoveryActive: false,
-        recoveryWindowEndsAt: null,
-        recoveryCount: session.recoveryCount
-      });
-    }
-
-    if (session.status === "COMPLETED") {
-      return res.status(400).json({ success: false });
-    }
-
-    // ============================================================
-    // 2️⃣ AI Decision (Session Cache → Global Cache → AI)
-    // ============================================================
-
-    let decision;
-
-    // 🔁 Session-level cache (DO NOT early return anymore)
-    const sessionCached = session.validatedVideos?.get(videoId);
-
-    if (sessionCached) {
-      decision = sessionCached;
-    } else {
-      // 🔁 Global AI Cache
-      const globalCache = await AiCache.findOne({
-        videoId,
-        topic: session.topic
-      });
-
-      if (globalCache) {
-        decision = applyConfidenceRule({
-          confidence: globalCache.confidence,
-          reason: globalCache.reason
-        });
-      } else {
-        const aiResult = await aiJudgeService({
-          topic: session.topic,
-          title,
-          description
-        });
-
-        decision = applyConfidenceRule(aiResult);
-
-        await AiCache.findOneAndUpdate(
-          { videoId, topic: session.topic },
-          {
-            videoId,
-            topic: session.topic,
-            confidence: aiResult.confidence,
-            reason: aiResult.reason
-          },
-          { upsert: true, new: true }
-        );
-      }
-
-      // Save in session-level cache
-      session.validatedVideos.set(videoId, decision);
-    }
-
-    session.activeVideoId = videoId;
-
-    // ============================================================
-    // 3️⃣ ARMED → RUNNING
-    // ============================================================
-
-    if (decision.decision === "VALID" && session.status === "ARMED") {
-      session.status = "RUNNING";
-      session.startTime = new Date();
-    }
-
-    // ============================================================
-    // 4️⃣ Recovery Logic (RUNNING only)
-    // ============================================================
-
-    if (session.status === "RUNNING") {
-
-      if (decision.decision === "INVALID") {
-
-        if (!session.recoveryActive) {
-
-          if (session.recoveryCount >= 5) {
-            session.status = "INVALID";
-            session.invalidReason = "TOPIC_MISMATCH";
-          } else {
-            session.recoveryActive = true;
-            session.recoveryWindowEndsAt = new Date(Date.now() + 60 * 1000);
-            session.recoveryCount += 1;
-          }
-
-        }
-
-      } else if (
-        decision.decision === "VALID" &&
-        session.recoveryActive
-      ) {
-        // Clear recovery if user corrected within window
-        session.recoveryActive = false;
-        session.recoveryWindowEndsAt = null;
-      }
-    }
-
-    // ============================================================
-    // 5️⃣ Save and Return Authoritative State
-    // ============================================================
-
+  if (session.status === "INVALID") {
     await session.save();
-
     return res.json({
-      ...decision,
       status: session.status,
-      recoveryActive: session.recoveryActive,
-      recoveryWindowEndsAt: session.recoveryWindowEndsAt,
+      invalidReason: session.invalidReason,
+      recoveryActive: false,
+      recoveryWindowEndsAt: null,
       recoveryCount: session.recoveryCount
     });
-
-  } catch (err) {
-
-    if (err.name === "VersionError") {
-      return res.status(409).json({
-        success: false,
-        message: "Session state changed, retry"
-      });
-    }
-
-    console.error("VideoEvent error:", err);
-    return res.status(500).json({ success: false });
   }
-};
 
+  if (session.status === "COMPLETED") {
+    throw new AppError("Session already completed", 400);
+  }
 
-// ============================================================
-// 4️⃣ HEARTBEAT (Server Focus Accumulation)
-// ============================================================
-export const heartbeatFocus = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const { sessionId } = req.params;
+  let decision;
 
-    const session = await Session.findOne({
-      _id: sessionId,
-      userId,
-      status: "RUNNING"
+  const sessionCached = session.validatedVideos?.get(videoId);
+
+  if (sessionCached) {
+    decision = sessionCached;
+  } else {
+
+    const globalCache = await AiCache.findOne({
+      videoId,
+      topic: session.topic
     });
 
-    if (!session) {
-      return res.status(400).json({ success: false });
-    }
+    if (globalCache) {
 
-    // 1. Enforce recovery expiry FIRST
-    enforceRecoveryIfExpired(session);
+      decision = applyConfidenceRule({
+        confidence: globalCache.confidence,
+        reason: globalCache.reason
+      });
 
-    if (session.status === "INVALID") {
-      await session.save();
-      return res.status(400).json({ success: false });
-    }
+    } else {
 
-    const now = Date.now();
+      const aiResult = await aiJudgeService({
+        topic: session.topic,
+        title,
+        description
+      });
 
-    // 2 Auto-expire zombie session (5 min inactivity)
-    if (session.lastHeartbeatAt) {
+      decision = applyConfidenceRule(aiResult);
 
-      const inactiveSeconds =
-        (now - session.lastHeartbeatAt.getTime()) / 1000;
-
-      if (inactiveSeconds > 300) { // 5 minutes
-        session.status = "INVALID";
-        session.invalidReason = "NETWORK_ABORT";
-
-        await session.save();
-        return res.status(400).json({ success: false });
-      }
-    }
-
-    // 3. Accumulate hidden time if still hidden
-    if (session.lastHiddenStart) {
-
-      const hiddenSeconds = Math.floor(
-        (now - session.lastHiddenStart.getTime()) / 1000
+      await AiCache.findOneAndUpdate(
+        { videoId, topic: session.topic },
+        {
+          videoId,
+          topic: session.topic,
+          confidence: decision.confidence, // 🔥 FIXED
+          reason: decision.reason
+        },
+        { upsert: true, new: true }
       );
-
-      session.totalHiddenSeconds += hiddenSeconds;
-      session.lastHiddenStart = new Date(now);
-
-      const maxAllowed = session.focusLength * 60 * 0.2;
-
-      if (session.totalHiddenSeconds > maxAllowed) {
-        session.status = "INVALID";
-        session.invalidReason = "EXCESSIVE_TAB_AWAY";
-
-        await session.save();
-        return res.status(400).json({ success: false });
-      }
     }
 
-
-    // 4. Accumulate pause time if still paused
-    if (session.lastPauseStart) {
-
-      const pauseSeconds = Math.floor(
-        (now - session.lastPauseStart.getTime()) / 1000
-      );
-
-      session.totalPauseSeconds += pauseSeconds;
-      session.lastPauseStart = new Date(now);
-
-      const maxAllowed = session.focusLength * 60 * 0.2;
-
-      if (session.totalPauseSeconds > maxAllowed) {
-        session.status = "INVALID";
-        session.invalidReason = "PAUSE_ABUSE";
-
-        await session.save();
-        return res.status(400).json({ success: false });
-      }
-    }
-
-    // 5. First heartbeat handling
-    if (!session.lastHeartbeatAt) {
-      session.lastHeartbeatAt = new Date(now);
-      await session.save();
-      return res.json({ success: true });
-    }
-
-    const last = session.lastHeartbeatAt.getTime();
-    const diffSeconds = Math.floor((now - last) / 1000);
-
-    if (diffSeconds <= 0) {
-      return res.json({ success: false });
-    }
-
-    // Cap gain (anti-cheat)
-    const safeSeconds = Math.min(diffSeconds, 30);
-
-    session.totalFocusSeconds += safeSeconds;
-    session.lastHeartbeatAt = new Date(now);
-
-    await session.save();
-
-    return res.json({ success: true });
-
-  } catch (err) {
-    console.error("Heartbeat error:", err);
-    return res.status(500).json({ success: false });
+    session.validatedVideos.set(videoId, decision);
   }
-};
 
+  session.activeVideoId = videoId;
+
+  if (decision.decision === "VALID" && session.status === "ARMED") {
+    session.status = "RUNNING";
+    session.startTime = new Date();
+  }
+
+  if (session.status === "RUNNING") {
+
+    if (decision.decision === "INVALID") {
+
+      if (!session.recoveryActive) {
+
+        if (session.recoveryCount >= 5) {
+          session.status = "INVALID";
+          session.invalidReason = "TOPIC_MISMATCH";
+        } else {
+          session.recoveryActive = true;
+          session.recoveryWindowEndsAt = new Date(Date.now() + 60000);
+          session.recoveryCount += 1;
+        }
+      }
+
+    } else if (decision.decision === "VALID" && session.recoveryActive) {
+      session.recoveryActive = false;
+      session.recoveryWindowEndsAt = null;
+    }
+  }
+
+  try {
+    await session.save();
+  } catch (err) {
+    if (err.name === "VersionError") {
+      throw new AppError("Session state changed, retry", 409);
+    }
+    throw err;
+  }
+
+  res.json({
+    ...decision,
+    status: session.status,
+    recoveryActive: session.recoveryActive,
+    recoveryWindowEndsAt: session.recoveryWindowEndsAt,
+    recoveryCount: session.recoveryCount
+  });
+});
 
 
 // ============================================================
-// 5️⃣ COMPLETE SESSION
+// 4️⃣ HEARTBEAT
 // ============================================================
-export const completeSession = async (req, res) => {
+
+export const heartbeatFocus = asyncHandler(async (req, res) => {
+
+  const userId = req.user.userId;
+  const { sessionId } = req.params;
+
+  const session = await Session.findOne({
+    _id: sessionId,
+    userId,
+    status: "RUNNING"
+  });
+
+  if (!session) {
+    throw new AppError("Session not running", 400);
+  }
+
+  enforceRecoveryIfExpired(session);
+
+  if (session.status === "INVALID") {
+    await session.save();
+    throw new AppError("Session invalidated", 400);
+  }
+
+  const now = Date.now();
+
+  if (!session.lastHeartbeatAt) {
+    session.lastHeartbeatAt = new Date(now);
+    await session.save();
+    return res.json({ success: true });
+  }
+
+  const last = session.lastHeartbeatAt.getTime();
+  const diffSeconds = Math.floor((now - last) / 1000);
+
+  if (diffSeconds <= 0) {
+    return res.json({ success: false });
+  }
+
+  const safeSeconds = Math.min(diffSeconds, 30);
+
+  session.totalFocusSeconds += safeSeconds;
+  session.lastHeartbeatAt = new Date(now);
+
+  await session.save();
+
+  res.json({ success: true });
+});
+
+
+// ============================================================
+// 5️⃣ COMPLETE SESSION (TRANSACTION)
+// ============================================================
+
+export const completeSession = asyncHandler(async (req, res) => {
+
+  const userId = req.user.userId;
+  const { sessionId } = req.params;
+
   const mongoSession = await mongoose.startSession();
 
   try {
-    const userId = req.user.userId;
-    const { sessionId } = req.params;
 
     await mongoSession.withTransaction(async () => {
 
@@ -441,18 +331,16 @@ export const completeSession = async (req, res) => {
       }).session(mongoSession);
 
       if (!session) {
-        throw new Error("SESSION_NOT_FOUND");
+        throw new AppError("Session not found", 400);
       }
 
       const requiredSeconds = session.focusLength * 60;
 
       if (session.totalFocusSeconds < requiredSeconds) {
-        throw new Error("FOCUS_NOT_COMPLETED");
+        throw new AppError("Focus time not completed", 400);
       }
 
-      if (session.completed) {
-        return; // no changes needed
-      }
+      if (session.completed) return;
 
       session.status = "COMPLETED";
       session.completed = true;
@@ -460,9 +348,8 @@ export const completeSession = async (req, res) => {
       await session.save({ session: mongoSession });
 
       const user = await User.findById(userId).session(mongoSession);
-
       if (!user) {
-        throw new Error("USER_NOT_FOUND");
+        throw new AppError("User not found", 404);
       }
 
       user.totalSessions += 1;
@@ -474,56 +361,39 @@ export const completeSession = async (req, res) => {
       await checkAndUnlockAchievements(userId, session, mongoSession);
     });
 
+  } finally {
     mongoSession.endSession();
-    return res.json({ success: true });
-
-  } catch (err) {
-    mongoSession.endSession();
-
-    if (err.message === "FOCUS_NOT_COMPLETED") {
-      return res.status(400).json({
-        success: false,
-        message: "Focus time not completed"
-      });
-    }
-
-    if (err.message === "SESSION_NOT_FOUND") {
-      return res.status(400).json({ success: false });
-    }
-
-    console.error("CompleteSession TX error:", err);
-    return res.status(500).json({ success: false });
   }
-};
+
+  res.json({ success: true });
+});
+
 
 // ============================================================
 // 6️⃣ RESET SESSION
 // ============================================================
-export const resetSession = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const { sessionId } = req.params;
 
-    const session = await Session.findOne({ _id: sessionId, userId });
+export const resetSession = asyncHandler(async (req, res) => {
 
-    if (!session) return res.status(404).json({ success: false });
+  const userId = req.user.userId;
+  const { sessionId } = req.params;
 
-    session.status = "INVALID";
-    session.invalidReason = "MANUAL_RESET";
-    session.completed = false;
-    session.activeVideoId = null;
+  const session = await Session.findOne({ _id: sessionId, userId });
 
-    // 🔥 Clear recovery state
-    session.recoveryActive = false;
-    session.recoveryWindowEndsAt = null;
-    session.recoveryCount = 0;
-
-    await session.save();
-
-    return res.json({ success: true });
-
-  } catch {
-    return res.status(500).json({ success: false });
+  if (!session) {
+    throw new AppError("Session not found", 404);
   }
-};
 
+  session.status = "INVALID";
+  session.invalidReason = "MANUAL_RESET";
+  session.completed = false;
+  session.activeVideoId = null;
+
+  session.recoveryActive = false;
+  session.recoveryWindowEndsAt = null;
+  session.recoveryCount = 0;
+
+  await session.save();
+
+  res.json({ success: true });
+});
