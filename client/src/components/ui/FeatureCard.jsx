@@ -1,6 +1,7 @@
-import React from 'react';
-import { motion } from 'framer-motion';
-import { cn } from '@/lib/utils';
+import React from "react";
+import { motion } from "framer-motion";
+import { Link } from "react-router-dom";
+import { cn } from "@/lib/utils";
 
 /**
  * FeatureCard - Clickable feature/shortcut card with hover effects
@@ -14,7 +15,9 @@ const FeatureCard = ({
   className,
   delay = 0,
 }) => {
-  const CardWrapper = href ? 'a' : 'button';
+  const isLink = !!href;
+
+  const Wrapper = isLink ? Link : "button";
 
   return (
     <motion.div
@@ -22,11 +25,12 @@ const FeatureCard = ({
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay, duration: 0.5 }}
       whileHover={{ y: -4 }}
-      className={cn('block', className)}
+      className={cn("block", className)}
     >
-      <CardWrapper
-        href={href}
-        onClick={onClick}
+      <Wrapper
+        {...(isLink
+          ? { to: href }   // 🔥 SPA navigation (NO reload)
+          : { onClick })}
         className="block w-full h-full glass-card rounded-xl p-6 text-left transition-all duration-300 hover:shadow-xl hover:border-primary/30 group"
       >
         <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary mb-4 transition-transform duration-300 group-hover:scale-110">
@@ -40,7 +44,7 @@ const FeatureCard = ({
         <p className="text-sm text-muted-foreground leading-relaxed">
           {description}
         </p>
-      </CardWrapper>
+      </Wrapper>
     </motion.div>
   );
 };
