@@ -1,4 +1,10 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect } from "react";
+import {
+  registerApi,
+  loginApi,
+  logoutApi,
+  getMeApi
+} from "@/api/auth.api";
 
 const AuthContext = createContext(undefined);
 
@@ -7,21 +13,14 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  //  Check auth on app load
   useEffect(() => {
-    const checkAuth = () => {
+    const checkAuth = async () => {
       try {
-        const savedUser = localStorage.getItem('focustube-user');
-        const token = localStorage.getItem('focustube-token');
-
-        if (savedUser && token) {
-          const parsedUser = JSON.parse(savedUser);
-          parsedUser.createdAt = new Date(parsedUser.createdAt);
-          setUser(parsedUser);
-        }
-      } catch (err) {
-        console.error('Auth error:', err);
-        localStorage.removeItem('focustube-user');
-        localStorage.removeItem('focustube-token');
+        const res = await getMeApi();
+        setUser(res.data.data.user);
+      } catch {
+        setUser(null);
       } finally {
         setIsLoading(false);
       }
@@ -31,66 +30,42 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const login = async (email, password) => {
-    setIsLoading(true);
+    try {
+      setIsLoading(true);
 
-    await new Promise((res) => setTimeout(res, 800));
+      const res = await loginApi({ email, password });
 
-    if (email && password.length >= 6) {
-      const newUser = {
-        id: 'user_' + Math.random().toString(36).substr(2, 9),
-        name: email.split('@')[0],
-        email,
-        avatar: '🎯',
-        createdAt: new Date(),
-      };
-
-      const token = 'ft_' + Math.random().toString(36).substr(2, 16);
-
-      localStorage.setItem('focustube-user', JSON.stringify(newUser));
-      localStorage.setItem('focustube-token', token);
-
-      setUser(newUser);
-      setIsLoading(false);
+      setUser(res.data.data.user);
       return true;
+
+    } catch (err) {
+      return false;
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
-    return false;
   };
-
-  
 
   const signup = async (name, email, password) => {
-    setIsLoading(true);
-    await new Promise((res) => setTimeout(res, 1000));
+    try {
+      setIsLoading(true);
 
-    if (name && email && password.length >= 6) {
-      const newUser = {
-        id: 'user_' + Math.random().toString(36).substr(2, 9),
-        name,
-        email,
-        avatar: '🎯',
-        createdAt: new Date(),
-      };
+      const res = await registerApi({ name, email, password });
 
-      const token = 'ft_' + Math.random().toString(36).substr(2, 16);
-
-      localStorage.setItem('focustube-user', JSON.stringify(newUser));
-      localStorage.setItem('focustube-token', token);
-
-      setUser(newUser);
-      setIsLoading(false);
+      setUser(res.data.data.user);
       return true;
-    }
 
-    setIsLoading(false);
-    return false;
+    } catch {
+      return false;
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const logout = () => {
-    localStorage.removeItem('focustube-user');
-    localStorage.removeItem('focustube-token');
-    setUser(null);
+  const logout = async () => {
+    try {
+      await logoutApi();
+      setUser(null);
+    } catch { }
   };
 
   return (
@@ -113,7 +88,7 @@ export const useAuth = () => {
   const context = useContext(AuthContext);
 
   if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
+    throw new Error("useAuth must be used within AuthProvider");
   }
 
   return context;

@@ -1,26 +1,27 @@
-import { ZodError } from "zod";
-
 export const validate = (schema) => (req, res, next) => {
   try {
-    const data = {
+    const parsed = schema.parse({
       body: req.body,
       params: req.params,
       query: req.query
-    };
+    });
 
-    const parsed = schema.parse(data);
+    // Only overwrite body and params safely
+    req.body = parsed.body ?? req.body;
+    req.params = parsed.params ?? req.params;
 
-    // Replace with sanitized values
-    req.body = parsed.body || {};
-    req.params = parsed.params || {};
-    req.query = parsed.query || {};
+    // DO NOT reassign req.query
+    // Instead merge safely:
+    Object.assign(req.query, parsed.query ?? {});
 
     next();
   } catch (err) {
-    if (err instanceof ZodError) {
+    console.log("VALIDATION ERROR RAW:", err);
+
+    if (err.errors) {
       return res.status(400).json({
         success: false,
-        message: err.errors[0].message
+        message: err.errors[0]?.message || "Validation failed"
       });
     }
 

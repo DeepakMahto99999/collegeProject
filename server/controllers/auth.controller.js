@@ -19,8 +19,8 @@ const generateToken = (userId) => {
 const setAuthCookie = (res, token) => {
   res.cookie("token", token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    secure: false,   // since you're on http
+    sameSite: "lax",  // IMPORTANT
     maxAge: 7 * 24 * 60 * 60 * 1000
   });
 };
@@ -32,7 +32,9 @@ const SALT_ROUNDS = Number(process.env.BCRYPT_ROUNDS) || 12;
 
 export const registerUser = asyncHandler(async (req, res) => {
 
-  const { name, email, password } = req.body;
+  const { name, email, password } = req.body; 
+
+  console.log("REQ BODY IN CONTROLLER:", req.body);
 
   const normalizedEmail = email.trim().toLowerCase();
 
@@ -117,4 +119,14 @@ export const logoutUser = asyncHandler(async (req, res) => {
     success: true,
     message: "Logged out"
   });
-});
+}); 
+
+export const getMe = asyncHandler(async (req, res) => {
+  const user = await UserModel.findById(req.user.userId)
+    .select("name email");
+
+  res.json({
+    success: true,
+    data: { user }
+  });
+}); 
