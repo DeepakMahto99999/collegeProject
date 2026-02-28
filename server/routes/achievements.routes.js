@@ -9,7 +9,7 @@ import {
 const router = express.Router();
 
 // Global achievement list
-router.get("/", authUser, getAllAchievements);
+router.get("/all", authUser, getAllAchievements);
 
 // Dashboard preview
 router.get("/preview", authUser, getAchievementPreview);

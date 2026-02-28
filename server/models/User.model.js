@@ -64,6 +64,27 @@ const userSchema = new mongoose.Schema(
       default: 1
     },
 
+    // -------- SPECIAL COUNTERS --------
+    earlyBirdCount: {
+      type: Number,
+      default: 0,
+    },
+
+    nightOwlCount: {
+      type: Number,
+      default: 0,
+    },
+
+    weekendSessionCount: {
+      type: Number,
+      default: 0,
+    },
+
+    perfectDayCount: {
+      type: Number,
+      default: 0,
+    },
+
     lastSessionDate: {
       type: Date,
     },

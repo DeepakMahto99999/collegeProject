@@ -21,18 +21,17 @@ export const getAllAchievements = asyncHandler(async (req, res) => {
 
 
 
-// ⭐ DASHBOARD PREVIEW VERSION
+//  DASHBOARD PREVIEW VERSION
 export const getAchievementPreview = asyncHandler(async (req, res) => {
+  const userId = req.user?.userId;
 
-  const userId = req.user.userId;
+  if (!userId) {
+    throw new AppError("Unauthorized", 401);
+  }
 
-  const [allAchievements, unlockedAchievements, user] = await Promise.all([
+  const [achievements, unlockedDocs, user] = await Promise.all([
     Achievement.find({ isActive: true }).lean(),
-    UserAchievement.find({ userId })
-      .select("achievementId unlockedAt")
-      .populate("achievementId")
-      .sort({ unlockedAt: -1 })
-      .lean(),
+    UserAchievement.find({ userId }).select("achievementId").lean(),
     User.findById(userId).lean()
   ]);
 
@@ -41,70 +40,95 @@ export const getAchievementPreview = asyncHandler(async (req, res) => {
   }
 
   const unlockedSet = new Set(
-    unlockedAchievements.map(a => a.achievementId._id.toString())
+    unlockedDocs.map(a => a.achievementId.toString())
   );
 
   const inProgress = [];
 
-  for (const ach of allAchievements) {
+  for (const ach of achievements) {
 
     if (unlockedSet.has(ach._id.toString())) continue;
 
     let progress = 0;
 
     switch (ach.conditionType) {
+
       case "TOTAL_SESSIONS":
         progress = user.totalSessions;
         break;
+
       case "TOTAL_MINUTES":
         progress = user.totalFocusMinutes;
         break;
-      case "STREAK":
+
+      case "CURRENT_STREAK":
         progress = user.currentStreak;
         break;
+
+      case "LONGEST_STREAK":
+        progress = user.longestStreak;
+        break;
+
+      case "EARLY_BIRD":
+        progress = user.earlyBirdCount || 0;
+        break;
+
+      case "NIGHT_OWL":
+        progress = user.nightOwlCount || 0;
+        break;
+
+      case "WEEKEND":
+        progress = user.weekendSessionCount || 0;
+        break;
+
+      case "PERFECT_DAY":
+        progress = user.perfectDayCount || 0;
+        break;
+
       default:
         progress = 0;
     }
 
-    if (progress > 0) {
-      inProgress.push({
-        achievementId: ach._id,
-        title: ach.title,
-        icon: ach.icon,
-        progress,
-        target: ach.threshold
-      });
-    }
+    inProgress.push({
+      achievementId: ach._id.toString(),
+      progress,
+      target: ach.threshold
+    });
   }
 
   res.json({
     success: true,
     data: {
-      unlockedCount: unlockedAchievements.length,
-      totalCount: allAchievements.length,
-      recentUnlocked: unlockedAchievements.slice(0, 3),
+      unlockedCount: unlockedSet.size,
+      totalCount: achievements.length,
+      unlockedIds: [...unlockedSet],
       inProgress
     }
   });
 });
 
 
-export const checkAndUnlockAchievements = async (userId, session, mongoSession = null) => {
 
+export const checkAndUnlockAchievements = async (
+  userId,
+  session,
+  mongoSession = null
+) => {
+   console.log("CALLING UNLOCK FUNCTION");
   const user = await User.findById(userId).session(mongoSession);
   if (!user) return;
 
-  const achievements = await Achievement.find({ isActive: true }).session(mongoSession);
-  const unlocked = await UserAchievement.find({ userId }).session(mongoSession);
+  const achievements = await Achievement
+    .find({ isActive: true })
+    .session(mongoSession);
+
+  const unlocked = await UserAchievement
+    .find({ userId })
+    .session(mongoSession);
 
   const unlockedSet = new Set(
     unlocked.map(a => a.achievementId.toString())
   );
-
-  let monthlyMinutes = null;
-
-  const sessionMonth = new Date(session.createdAt).getMonth();
-  const sessionYear = new Date(session.createdAt).getFullYear();
 
   for (const ach of achievements) {
 
@@ -122,44 +146,57 @@ export const checkAndUnlockAchievements = async (userId, session, mongoSession =
         qualifies = user.totalFocusMinutes >= ach.threshold;
         break;
 
-      case "STREAK":
+      case "CURRENT_STREAK":
+        qualifies = user.currentStreak >= ach.threshold;
+        break;
+
+      case "LONGEST_STREAK":
         qualifies = user.longestStreak >= ach.threshold;
         break;
 
-      case "MONTHLY_MINUTES":
+      case "EARLY_BIRD":
+        qualifies = (user.earlyBirdCount || 0) >= ach.threshold;
+        break;
 
-        if (monthlyMinutes === null) {
+      case "NIGHT_OWL":
+        qualifies = (user.nightOwlCount || 0) >= ach.threshold;
+        break;
 
-          const startOfMonth = new Date(sessionYear, sessionMonth, 1);
+      case "WEEKEND":
+        qualifies = (user.weekendSessionCount || 0) >= ach.threshold;
+        break;
 
-          const monthlySessions = await Session.find({
-            userId,
-            completed: true,
-            createdAt: { $gte: startOfMonth }
-          })
-            .select("totalFocusSeconds")
-            .session(mongoSession);
-
-          monthlyMinutes = monthlySessions.reduce(
-            (acc, s) => acc + (s.totalFocusSeconds || 0) / 60,
-            0
-          );
-        }
-
-        qualifies = monthlyMinutes >= ach.threshold;
+      case "PERFECT_DAY":
+        qualifies = (user.perfectDayCount || 0) >= ach.threshold;
         break;
 
       default:
         qualifies = false;
     }
 
+    console.log("---- Achievement Debug ----");
+    console.log("Title:", ach.title);
+    console.log("Condition Type:", ach.conditionType);
+    console.log("User totalSessions:", user.totalSessions);
+    console.log("Threshold:", ach.threshold);
+    console.log("Qualifies:", qualifies);
+    console.log("----------------------------");
+
     if (qualifies) {
+
       await UserAchievement.create([{
         userId,
         achievementId: ach._id,
         sourceSessionId: session._id,
         unlockedAt: new Date()
       }], { session: mongoSession });
+
+      // Optional: Add reward points automatically
+      if (ach.rewardPoints > 0) {
+        user.points += ach.rewardPoints;
+      }
     }
   }
+
+  await user.save({ session: mongoSession });
 };

@@ -52,7 +52,7 @@ export const MONTHLY_STATS_ROUTE = `${STATISTICS_BASE}/monthly`;
 // ================= ACHIEVEMENTS =================
 export const ACHIEVEMENTS_BASE = `${API_BASE}/achievements`;
 
-export const GET_ALL_ACHIEVEMENTS_ROUTE = `${ACHIEVEMENTS_BASE}/`;
+export const GET_ALL_ACHIEVEMENTS_ROUTE = `${ACHIEVEMENTS_BASE}/all`;
 export const GET_ACHIEVEMENT_PREVIEW_ROUTE =
     `${ACHIEVEMENTS_BASE}/preview`;
 

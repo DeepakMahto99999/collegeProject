@@ -9,12 +9,14 @@ const achievementSchema = new mongoose.Schema({
     enum: [
       "TOTAL_SESSIONS",
       "TOTAL_MINUTES",
-      "STREAK",
+      "CURRENT_STREAK",
+      "LONGEST_STREAK",
       "EARLY_BIRD",
       "NIGHT_OWL",
       "WEEKEND",
-      "PERFECT_DAY",
+      "PERFECT_DAY"
     ],
+    required: true
   },
 
   threshold: {
@@ -48,8 +50,8 @@ const achievementSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true,
-  }, 
-  
+  },
+
 });
 
 achievementSchema.index({ isActive: 1 });

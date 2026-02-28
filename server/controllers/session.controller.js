@@ -85,12 +85,12 @@ export const getCurrentSession = asyncHandler(async (req, res) => {
     focusLength: user.focusLength,
     session: session
       ? {
-          id: session._id,
-          topic: session.topic,
-          status: session.status,
-          startTime: session.startTime,
-          invalidReason: session.invalidReason
-        }
+        id: session._id,
+        topic: session.topic,
+        status: session.status,
+        startTime: session.startTime,
+        invalidReason: session.invalidReason
+      }
       : null
   });
 });
@@ -314,7 +314,7 @@ export const heartbeatFocus = asyncHandler(async (req, res) => {
 // ============================================================
 
 export const completeSession = asyncHandler(async (req, res) => {
-
+console.log("COMPLETE SESSION CALLED");
   const userId = req.user.userId;
   const { sessionId } = req.params;
 
@@ -339,6 +339,7 @@ export const completeSession = asyncHandler(async (req, res) => {
       if (session.totalFocusSeconds < requiredSeconds) {
         throw new AppError("Focus time not completed", 400);
       }
+      console.log("Session already completed:", session.completed);
 
       if (session.completed) return;
 
@@ -352,13 +353,102 @@ export const completeSession = asyncHandler(async (req, res) => {
         throw new AppError("User not found", 404);
       }
 
+      /* =====================================================
+         1️⃣ BASIC STATS
+      ===================================================== */
+
       user.totalSessions += 1;
       user.totalFocusMinutes += session.focusLength;
       user.points += session.focusLength * 2;
 
+      /* =====================================================
+         2️⃣ TIME-BASED SPECIAL COUNTERS
+      ===================================================== */
+
+      const sessionDate = new Date(session.startTime);
+      const hour = sessionDate.getHours();
+      const day = sessionDate.getDay(); // 0 = Sun, 6 = Sat
+
+      // Early Bird (before 7 AM)
+      if (hour < 7) {
+        user.earlyBirdCount += 1;
+      }
+
+      // Night Owl (after 11 PM)
+      if (hour >= 23) {
+        user.nightOwlCount += 1;
+      }
+
+      // Weekend
+      if (day === 0 || day === 6) {
+        user.weekendSessionCount += 1;
+      }
+
+      /* =====================================================
+         3️⃣ PERFECT DAY (3 sessions same day)
+      ===================================================== */
+
+      const startOfDay = new Date(sessionDate);
+      startOfDay.setHours(0, 0, 0, 0);
+
+      const endOfDay = new Date(sessionDate);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      const todayCompletedCount = await Session.countDocuments({
+        userId,
+        completed: true,
+        startTime: { $gte: startOfDay, $lte: endOfDay }
+      }).session(mongoSession);
+
+      if (todayCompletedCount >= 3) {
+        user.perfectDayCount += 1;
+      }
+
+      /* =====================================================
+         4️⃣ STREAK LOGIC
+      ===================================================== */
+
+      const today = new Date(sessionDate);
+      today.setHours(0, 0, 0, 0);
+
+      const lastSessionDate = user.lastSessionDate
+        ? new Date(user.lastSessionDate)
+        : null;
+
+      if (!lastSessionDate) {
+        user.currentStreak = 1;
+      } else {
+
+        const last = new Date(lastSessionDate);
+        last.setHours(0, 0, 0, 0);
+
+        const diffDays = Math.floor(
+          (today - last) / (1000 * 60 * 60 * 24)
+        );
+
+        if (diffDays === 1) {
+          user.currentStreak += 1;
+        } else if (diffDays === 0) {
+          // same day → do nothing
+        } else {
+          user.currentStreak = 1;
+        }
+      }
+
+      if (user.currentStreak > user.longestStreak) {
+        user.longestStreak = user.currentStreak;
+      }
+
+      user.lastSessionDate = sessionDate;
+
       await user.save({ session: mongoSession });
 
+      /* =====================================================
+         5️⃣ UNLOCK ACHIEVEMENTS
+      ===================================================== */
+
       await checkAndUnlockAchievements(userId, session, mongoSession);
+
     });
 
   } finally {
